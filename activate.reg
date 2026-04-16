@@ -1,0 +1,5 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\ZakazMK]
+"license_activated"=dword:00000001
+"first_run"="2026-03-24 12:00:00"

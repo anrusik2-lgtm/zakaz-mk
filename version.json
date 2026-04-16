@@ -1,0 +1,12 @@
+{
+    "version": "1.8",
+    "release_date": "2026-04-16",
+    "download_url": "https://ваш-сайт.ru/updates/ZakazMK_v1.8.exe",
+    "changelog": [
+        "✅ Добавлена система автообновления",
+        "✅ Исправлены ошибки импорта",
+        "✅ Улучшена работа со складом"
+    ],
+    "min_version": "1.5",
+    "critical": false
+}

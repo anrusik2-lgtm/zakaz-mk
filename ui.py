@@ -1,0 +1,5573 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, simpledialog
+import os
+import sqlite3
+import re
+import openpyxl
+from datetime import datetime, timedelta
+from database import import_from_excel, get_item_details, get_materials_for_item, import_nonstandard_from_excel
+from orders_db import init_orders_db, save_order, get_order, get_all_orders, clear_orders, delete_order
+from config import load_config, save_config, check_license, activate_license, reset_license, get_demo_expiry, CONFIG_FILE
+from help_text import HELP_TEXT
+import time
+import tkinter as tk
+
+class OrderApp:
+    def __init__(self, root, config=None):
+        self.root = root
+        self.root.title("Заказ МК")
+        
+        if config is None:
+            from config import load_config
+            self.config = load_config()
+        else:
+            self.config = config
+        
+        print(f"📂 Использую конфиг: {self.config}")
+        
+        if self.config.get('license_activated'):
+            print("✅ Программа лицензионная")
+        else:
+            print("⏳ Демо-версия")
+        
+        width = self.config.get('window_width', 1200)
+        height = self.config.get('window_height', 700)
+        x = self.config.get('window_x', 100)
+        y = self.config.get('window_y', 100)
+        
+        geometry = f"{width}x{height}+{x}+{y}"
+        print(f"📐 Устанавливаю геометрию: {geometry}")
+        self.root.geometry(geometry)
+        
+        self.root.pack_propagate(False)
+        self.root.grid_propagate(False)
+        
+        self.config_file = CONFIG_FILE
+        self.root.minsize(800, 600)
+        
+        self.order_items = []
+        self.materials = {}
+        self.furniture = {}
+        self.search_after_id = None
+        
+        # ✅ ИСПРАВЛЕНО: Создаем BooleanVar и сразу привязываем к root
+        self.summary_var = tk.BooleanVar(self.root, value=False)  # ← Добавлен parent root
+        # ===========================================================
+        
+        appdata_dir = os.path.join(os.environ['LOCALAPPDATA'], 'ZakazMK')
+        self.db_file = os.path.join(appdata_dir, 'database.db')
+        print(f"📁 Использую базу: {self.db_file}")
+        
+        if os.path.exists(self.db_file):
+            print(f"✅ База найдена, размер: {os.path.getsize(self.db_file)} байт")
+        else:
+            print(f"❌ База не найдена!")
+        
+        init_orders_db()
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        self.create_widgets()
+        self.check_database()
+        self.root.after(100, self.delayed_restore_sash)
+        self.show_demo_label()
+        self.root.after(1500, self.save_final_geometry)
+        
+        # ✅ АВТО-БЭКАП ПРИ ОТКРЫТИИ
+        if self.config.get('auto_backup_enabled', True):
+            self.root.after(2000, self.create_opening_backup)  # Через 2 секунды после запуска
+
+def check_update_on_startup(self):
+    """Проверяет обновления при запуске"""
+    from updater import check_for_update
+    
+    def do_check():
+        update_info = check_for_update()
+        if update_info:
+            # Показываем окно в главном потоке
+            self.root.after(0, lambda: self.show_update_dialog(update_info))
+    
+    # Запускаем в отдельном потоке
+    import threading
+    thread = threading.Thread(target=do_check, daemon=True)
+    thread.start()
+
+def show_update_dialog(self, update_info):
+    """Показывает диалог обновления"""
+    dialog = tk.Toplevel(self.root)
+    dialog.title("🔄 Доступно обновление")
+    dialog.geometry("500x400")
+    dialog.transient(self.root)
+    dialog.grab_set()
+    dialog.resizable(False, False)
+    
+    # Центрируем
+    dialog.update_idletasks()
+    x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (500 // 2)
+    y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (400 // 2)
+    dialog.geometry(f"500x400+{x}+{y}")
+    
+    # Заголовок
+    ttk.Label(dialog, text="🔄 Доступна новая версия!",
+              font=('Arial', 14, 'bold'), foreground='green').pack(pady=10)
+    
+    # Информация о версии
+    version_frame = ttk.Frame(dialog)
+    version_frame.pack(fill=tk.X, padx=20, pady=5)
+    ttk.Label(version_frame, text=f"Текущая версия: {updater.get_current_version()}",
+              font=('Arial', 10)).pack(anchor=tk.W)
+    ttk.Label(version_frame, text=f"Новая версия: {update_info['version']}",
+              font=('Arial', 10, 'bold')).pack(anchor=tk.W)
+    ttk.Label(version_frame, text=f"Дата выпуска: {update_info['release_date']}",
+              font=('Arial', 9)).pack(anchor=tk.W)
+    
+    # Список изменений
+    ttk.Label(dialog, text="Что нового:", font=('Arial', 11, 'bold')).pack(pady=(10, 5))
+    
+    changes_text = tk.Text(dialog, height=8, width=50, font=('Arial', 9))
+    changes_text.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+    
+    for change in update_info.get('changelog', []):
+        changes_text.insert(tk.END, f"• {change}\n")
+    changes_text.config(state='disabled')
+    
+    # Критическое обновление
+    if update_info.get('critical', False):
+        ttk.Label(dialog, text="⚠️ Критическое обновление! Рекомендуется установить.",
+                  foreground='red', font=('Arial', 9, 'bold')).pack(pady=5)
+    
+    # Кнопки
+    btn_frame = ttk.Frame(dialog)
+    btn_frame.pack(pady=15)
+    
+    result = [None]
+    
+    def on_update():
+        result[0] = 'update'
+        dialog.destroy()
+    
+    def on_later():
+        result[0] = 'later'
+        dialog.destroy()
+    
+    ttk.Button(btn_frame, text="🔄 Обновить сейчас", command=on_update,
+               width=20).pack(side=tk.LEFT, padx=10)
+    ttk.Button(btn_frame, text="⏰ Позже", command=on_later,
+               width=15).pack(side=tk.LEFT, padx=10)
+    
+    dialog.wait_window()
+    
+    if result[0] == 'update':
+        self.download_and_install_update(update_info)
+
+    def download_and_install_update(self, update_info):
+        """Скачивает и устанавливает обновление"""
+        from updater import download_update, install_update
+        
+        # Окно прогресса
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("🔄 Загрузка обновления")
+        progress_win.geometry("400x200")
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+        progress_win.resizable(False, False)
+        
+        ttk.Label(progress_win, text="Загрузка новой версии...",
+                  font=('Arial', 11)).pack(pady=20)
+        
+        progress_bar = ttk.Progressbar(progress_win, mode='determinate', length=300)
+        progress_bar.pack(pady=10)
+        
+        status_label = ttk.Label(progress_win, text="0%", font=('Arial', 9))
+        status_label.pack()
+        
+        def on_progress(value):
+            progress_bar['value'] = value * 100
+            status_label.config(text=f"{int(value * 100)}%")
+            progress_win.update()
+        
+        def do_download():
+            exe_path = download_update(update_info['download_url'], on_progress)
+            if exe_path:
+                progress_win.destroy()
+                if messagebox.askyesno("Установка",
+                    "Файл загружен! Установить обновление?\n\n"
+                    "Программа будет перезапущена."):
+                    install_update(exe_path)
+            else:
+                progress_win.destroy()
+                messagebox.showerror("Ошибка", "Не удалось загрузить обновление!")
+        
+        import threading
+        thread = threading.Thread(target=do_download, daemon=True)
+        thread.start()
+
+    def create_opening_backup(self):
+        """Создаёт авто-бэкап при открытии программы"""
+        try:
+            if self.config.get('auto_backup_enabled', True):
+                print("\n🔄 Создание авто-бэкапа при открытии...")
+                from backup_manager import create_auto_backup_on_open
+                create_auto_backup_on_open()
+        except Exception as e:
+            print(f"⚠️ Ошибка авто-бэкапа при открытии: {e}")
+
+    def on_checkbox_toggle(self):
+        """Обработчик для принудительного обновления переменной чекбокса."""
+        current_value = self.summary_var.get()
+        print(f"✓ Чекбокс 'Общий отчет' переключен. Новое значение: {current_value}")
+        
+        # ✅ ДОБАВЛЕНО: Дополнительная отладка
+        print(f"   Тип self.summary_var: {type(self.summary_var)}")
+        print(f"   ID self.summary_var: {id(self.summary_var)}")
+
+    def create_widgets(self):
+        """Создание всех виджетов интерфейса"""
+        # ========== ВЕРХНЯЯ ПАНЕЛЬ ==========
+        top_frame = ttk.Frame(self.root)
+        top_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Номер заказа (слева)
+        ttk.Label(top_frame, text="Заказ №: ").pack(side=tk.LEFT, padx=5)
+        self.order_number = ttk.Entry(top_frame, width=10)
+        self.order_number.pack(side=tk.LEFT, padx=5)
+        self.order_number.bind('<Return>', lambda e: self.search_entry.focus())
+
+        # ✅ ВАЛИДАЦИЯ НОМЕРА ЗАКАЗА - запрет ведущих нулей
+        def validate_order_number(action, value):
+            """
+            action: '1' - вставка, '0' - удаление
+            value: значение после изменения
+            """
+            # Разрешаем очистку поля
+            if value == '':
+                return True
+            
+            # Запрещаем ввод нуля в начале
+            if value.startswith('0') and len(value) > 1:
+                messagebox.showwarning("Внимание", 
+                    "Номер заказа не должен начинаться с нуля!\nПример: 123 (не 0123)",
+                    parent=self.root)
+                return False
+            
+            # Разрешаем только цифры
+            if not value.isdigit():
+                return False
+            
+            return True
+
+        # ✅ Регистрируем валидатор
+        vcmd = (self.root.register(validate_order_number), '%d', '%P')
+        self.order_number.configure(validate='key', validatecommand=vcmd)
+        
+        # Кнопка справки
+        ttk.Button(top_frame, text="❓", command=self.show_help).pack(side=tk.LEFT, padx=5)
+        
+        # ===== КНОПКА ПОИСКА НЕСТАНДАРТНЫХ =====
+        ttk.Button(top_frame, text="🔍 НЕСТАНДАРТ", 
+                  command=self.search_excel_files,
+                  width=15).pack(side=tk.LEFT, padx=5)
+
+        # ===== КНОПКА ИМПОРТА =====
+        ttk.Button(top_frame, text="📥 ИМПОРТ",
+            command=self.import_order_from_excel,
+            width=15).pack(side=tk.LEFT, padx=5)
+        # ========== ПРАВАЯ ЧАСТЬ ==========
+        # Сначала создаем фрейм для правой группы, чтобы управлять порядком
+        right_group = ttk.Frame(top_frame)
+        right_group.pack(side=tk.RIGHT)
+        
+        # Теперь располагаем элементы в right_group справа налево:
+        # 1. Чекбокс (самый правый)
+        self.summary_var = tk.BooleanVar(self.root, value=False)
+        self.summary_cb = ttk.Checkbutton(
+            right_group,
+            text="📊 Общий отчет",
+            variable=self.summary_var,
+            command=self.on_checkbox_toggle
+        )
+        self.summary_cb.pack(side=tk.RIGHT, padx=5)
+        
+        # 2. Кнопка "Открыть PDF" (слева от чекбокса)
+        ttk.Button(right_group, text="📂 Открыть PDF", command=self.open_pdf).pack(side=tk.RIGHT, padx=2)
+        
+        # 3. Кнопка "СОХРАНИТЬ" 
+        ttk.Button(right_group, text="💾 Сохранить", command=self.save_order_btn).pack(side=tk.RIGHT, padx=2)
+        
+        # 4. Кнопка "СКЛАД"
+        ttk.Button(right_group, text="📦 Склад", command=self.open_inventory).pack(side=tk.RIGHT, padx=2)
+        
+        # 5. Кнопка "Печать" (слева от "Открыть PDF")
+        #ttk.Button(right_group, text="🖨️ Печать", command=self.print_order).pack(side=tk.RIGHT, padx=2)
+        
+        # 6. Кнопка "Очистить" (слева от "Печать")
+        ttk.Button(right_group, text="🗑️ Очистить", command=self.clear_order).pack(side=tk.RIGHT, padx=2)
+        
+        # 7. Кнопка "Админ" (слева от "Очистить")
+        ttk.Button(right_group, text="⚙️ Админ", command=self.open_admin).pack(side=tk.RIGHT, padx=2)
+        
+        # 8. Кнопка "Заказы" (слева от "Админ" - самая левая в правой группе)
+        ttk.Button(right_group, text="📋 Заказы", command=self.view_orders).pack(side=tk.RIGHT, padx=2)
+        
+        # ========== ОСНОВНОЙ КОНТЕНТ С РАЗДЕЛИТЕЛЕМ ==========
+        self.main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        self.main_paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # ========== ЛЕВАЯ ПАНЕЛЬ ==========
+        left_frame = ttk.Frame(self.main_paned)
+        self.main_paned.add(left_frame, weight=1)
+        
+        # Поиск изделия
+        search_frame = ttk.LabelFrame(left_frame, text="Поиск изделия", padding=5)
+        search_frame.pack(fill=tk.X, pady=5)
+        
+        self.search_entry = ttk.Entry(search_frame, width=50)
+        self.search_entry.pack(fill=tk.X, pady=2)
+        self.search_entry.bind('<KeyRelease>', self.on_search_key_release)
+        self.search_entry.bind('<Return>', self.on_search_enter)
+        
+        # Результаты поиска
+        results_frame = ttk.LabelFrame(left_frame, text="Результаты поиска", padding=5)
+        results_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.listbox = tk.Listbox(results_frame, height=10)
+        self.listbox.pack(fill=tk.BOTH, expand=True, pady=2)
+        self.listbox.bind('<Double-1>', self.on_select)
+        self.listbox.bind('<Return>', self.on_select)
+        
+        self.search_status_var = tk.StringVar()
+        self.search_status_var.set("Введите текст для поиска")
+        ttk.Label(results_frame, textvariable=self.search_status_var, foreground='gray').pack(anchor=tk.W, pady=2)
+        
+        # ========== ВЫБРАННОЕ ИЗДЕЛИЕ ==========
+        item_frame = ttk.LabelFrame(left_frame, text="Выбранное изделие", padding=10)
+        item_frame.pack(fill=tk.X, pady=5)
+        
+        self.name_var = tk.StringVar()
+        self.articul_var = tk.StringVar()
+        self.item_number_var = tk.StringVar()
+        self.qty_var = tk.StringVar()
+        self.color_var = tk.StringVar()
+        
+        # Наименование
+        ttk.Label(item_frame, text="Наименование:").pack(anchor=tk.W, pady=(5,0))
+        self.name_entry = ttk.Entry(item_frame, textvariable=self.name_var, width=50)
+        self.name_entry.pack(fill=tk.X, pady=(0,5))
+        self.name_entry.config(state='readonly')
+        
+        # Артикул
+        ttk.Label(item_frame, text="Артикул:").pack(anchor=tk.W, pady=(5,0))
+        self.articul_entry = ttk.Entry(item_frame, textvariable=self.articul_var, width=50)
+        self.articul_entry.pack(fill=tk.X, pady=(0,5))
+        self.articul_entry.config(state='readonly')
+        
+        # Позиция в заказе
+        ttk.Label(item_frame, text="Позиция в заказе:").pack(anchor=tk.W, pady=(5,0))
+        self.item_number_entry = ttk.Entry(item_frame, textvariable=self.item_number_var, width=50)
+        self.item_number_entry.pack(fill=tk.X, pady=(0,5))
+        self.item_number_entry.bind('<Return>', lambda e: self.qty_entry.focus())
+        
+        # Количество
+        ttk.Label(item_frame, text="Количество:").pack(anchor=tk.W, pady=(5,0))
+        self.qty_entry = ttk.Entry(item_frame, textvariable=self.qty_var, width=50)
+        self.qty_entry.pack(fill=tk.X, pady=(0,5))
+        self.qty_entry.bind('<Return>', lambda e: self.color_entry.focus())
+        
+        # Цвет
+        ttk.Label(item_frame, text="Цвет:").pack(anchor=tk.W, pady=(5,0))
+        self.color_entry = ttk.Entry(item_frame, textvariable=self.color_var, width=50)
+        self.color_entry.pack(fill=tk.X, pady=(0,10))
+        self.color_entry.bind('<Return>', lambda e: self.add_to_order())
+        
+        # Кнопка добавления в заказ
+        self.add_button = ttk.Button(item_frame, text="+ Добавить в заказ", command=self.add_to_order)
+        self.add_button.pack(pady=10)
+        
+        # ========== ПРАВАЯ ПАНЕЛЬ ==========
+        right_frame = ttk.Frame(self.main_paned)
+        self.main_paned.add(right_frame, weight=2)
+        
+        # Позиции в заказе
+        order_frame = ttk.LabelFrame(right_frame, text="Позиции в заказе", padding=5)
+        order_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Кнопка удаления
+        btn_frame = ttk.Frame(order_frame)
+        btn_frame.pack(fill=tk.X, pady=2)
+
+        ttk.Button(btn_frame, text="🗑️ Удалить", command=self.delete_item).pack(side=tk.LEFT, padx=2)
+
+        # ✅ НОВАЯ КНОПКА - ИЗМЕНИТЬ ПОЗИЦИЮ
+        ttk.Button(btn_frame, text="✏️ Изменить", command=self.edit_order_item).pack(side=tk.LEFT, padx=2)
+
+        # КНОПКА - ОТКРЫТЬ ЧЕРТЁЖ
+        self.drawing_btn = ttk.Button(
+            btn_frame,
+            text="📐 Чертёж",
+            command=self.open_item_drawing,
+            state=tk.DISABLED
+        )
+        self.drawing_btn.pack(side=tk.LEFT, padx=2)
+        # ================================
+        
+        # Таблица с заказами
+        columns = ('№', 'Пункт', 'Наименование', 'Артикул', 'Кол-во', 'Цвет')
+        self.order_tree = ttk.Treeview(order_frame, columns=columns, show='headings', height=8)
+        
+        self.order_tree.heading('№', text='№')
+        self.order_tree.heading('Пункт', text='Пункт')
+        self.order_tree.heading('Наименование', text='Наименование')
+        self.order_tree.heading('Артикул', text='Артикул')
+        self.order_tree.heading('Кол-во', text='Кол-во')
+        self.order_tree.heading('Цвет', text='Цвет')
+        
+        self.order_tree.column('№', width=40)
+        self.order_tree.column('Пункт', width=60)
+        self.order_tree.column('Наименование', width=250)
+        self.order_tree.column('Артикул', width=80)
+        self.order_tree.column('Кол-во', width=60)
+        self.order_tree.column('Цвет', width=80)
+        
+        scrollbar = ttk.Scrollbar(order_frame, orient=tk.VERTICAL, command=self.order_tree.yview)
+        self.order_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.order_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.order_tree.bind('<Double-1>', lambda e: self.delete_item())
+        self.order_tree.bind('<<TreeviewSelect>>', self.on_order_item_select)
+
+    def import_order_from_excel(self):
+        """Импорт заказа из Excel файла (.xls)"""
+        import os
+        import re
+        import threading
+        from tkinter import ttk
+        
+        file_path = filedialog.askopenfilename(
+            title="Выберите Excel файл для импорта",
+            filetypes=[
+                ("Excel 97-2003", "*.xls"),
+            ]
+        )
+        
+        if not file_path:
+            return
+        
+        # Флаг для отмены импорта
+        import_cancelled = [False]
+        
+        def create_progress_window():
+            """Создает окно прогресса"""
+            win = tk.Toplevel(self.root)
+            win.title("Импорт заказа")
+            win.geometry("500x250")
+            win.transient(self.root)
+            win.grab_set()
+            win.resizable(False, False)
+            
+            # Центрируем окно
+            win.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (500 // 2)
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (250 // 2)
+            win.geometry(f"+{x}+{y}")
+            
+            # Заголовок
+            ttk.Label(win, text="Импорт заказа из Excel", 
+                      font=('Arial', 12, 'bold')).pack(pady=10)
+            
+            # Статус
+            status_var = tk.StringVar(win, value="Чтение файла...")
+            status_label = ttk.Label(win, textvariable=status_var, 
+                                     font=('Arial', 10))
+            status_label.pack(pady=5)
+            
+            # Прогресс-бар
+            progress_bar = ttk.Progressbar(win, mode='indeterminate', length=400)
+            progress_bar.pack(pady=10)
+            progress_bar.start(10)
+            
+            # Детальный статус
+            detail_var = tk.StringVar(win, value="")
+            detail_label = ttk.Label(win, textvariable=detail_var, 
+                                     font=('Arial', 8), foreground='gray')
+            detail_label.pack(pady=5)
+            
+            return win, progress_bar, status_var, detail_var
+        
+        # Создаем первое окно прогресса
+        progress_win, progress_bar, status_var, detail_var = create_progress_window()
+        
+        # Переменная для результата
+        error_msg = [None]
+        
+        def do_import():
+            try:
+                import xlrd
+                
+                status_var.set("Чтение Excel файла...")
+                detail_var.set(f"Файл: {os.path.basename(file_path)}")
+                progress_win.update()
+                
+                # ✅ Открываем файл с форматированием
+                wb = xlrd.open_workbook(file_path, formatting_info=False)
+                ws = wb.sheet_by_index(0)
+                
+                status_var.set("Определение номера заказа...")
+                progress_win.update()
+
+                # Получаем номер заказа из ячейки J3
+                order_number_raw = ""
+                if ws.nrows > 2 and ws.ncols > 9:
+                    cell_value = ws.cell_value(2, 9)
+                    if cell_value:
+                        if isinstance(cell_value, float):
+                            order_number_raw = str(int(cell_value))
+                        else:
+                            order_number_raw = str(cell_value).strip()
+
+                # Функция проверки номера
+                def is_valid_order_number(value):
+                    if not value:
+                        return False
+                    cleaned = value.lstrip('0')
+                    if not cleaned:
+                        return False
+                    return cleaned.isdigit()
+
+                order_number = None
+
+                if is_valid_order_number(order_number_raw):
+                    order_number = order_number_raw.lstrip('0') or '0'
+                else:
+                    # Останавливаем анимацию прогресс-бара
+                    progress_bar.stop()
+                    progress_win.update()
+                    
+                    # Пытаемся найти цифры в имени файла
+                    match = re.search(r'(\d+)', os.path.basename(file_path))
+                    if match and is_valid_order_number(match.group(1)):
+                        candidate = match.group(1)
+                        
+                        # Используем progress_win как родителя (не скрываем его)
+                        result = messagebox.askyesno(
+                            "Некорректный номер заказа",
+                            f"В файле номер заказа указан как: '{order_number_raw}'\n"
+                            f"Это не число.\n\n"
+                            f"Найден возможный номер из имени файла: '{candidate}'\n\n"
+                            f"Использовать '{candidate}' как номер заказа?\n\n"
+                            f"Нажмите 'Нет' для ручного ввода.",
+                            parent=progress_win
+                        )
+                        
+                        if result:
+                            order_number = candidate
+                        else:
+                            # Ручной ввод номера
+                            dialog = tk.Toplevel(progress_win)
+                            dialog.title("Ввод номера заказа")
+                            dialog.geometry("400x200")
+                            dialog.transient(progress_win)
+                            dialog.grab_set()
+                            dialog.resizable(False, False)
+                            
+                            # Центрируем диалог
+                            dialog.update_idletasks()
+                            x = progress_win.winfo_x() + (progress_win.winfo_width() // 2) - (400 // 2)
+                            y = progress_win.winfo_y() + (progress_win.winfo_height() // 2) - (200 // 2)
+                            dialog.geometry(f"400x200+{x}+{y}")
+                            
+                            ttk.Label(dialog, text="Введите номер заказа:", 
+                                     font=('Arial', 11)).pack(pady=20)
+                            
+                            entry_var = tk.StringVar(dialog)
+                            entry = ttk.Entry(dialog, textvariable=entry_var, width=20, font=('Arial', 11))
+                            entry.pack(pady=10)
+                            entry.focus()
+                            
+                            result_var = [None]
+                            
+                            def on_ok():
+                                value = entry_var.get().strip()
+                                if value and is_valid_order_number(value):
+                                    result_var[0] = value.lstrip('0') or '0'
+                                    dialog.destroy()
+                                else:
+                                    messagebox.showerror("Ошибка", 
+                                                        "Некорректный номер!\nНомер должен состоять только из цифр.",
+                                                        parent=dialog)
+                            
+                            def on_cancel():
+                                result_var[0] = None
+                                dialog.destroy()
+                            
+                            ttk.Button(dialog, text="OK", command=on_ok, width=10).pack(side=tk.LEFT, padx=20, pady=10)
+                            ttk.Button(dialog, text="Отмена", command=on_cancel, width=10).pack(side=tk.RIGHT, padx=20, pady=10)
+                            
+                            entry.bind('<Return>', lambda e: on_ok())
+                            entry.bind('<Escape>', lambda e: on_cancel())
+                            
+                            dialog.wait_window()
+                            
+                            if result_var[0]:
+                                order_number = result_var[0]
+                            else:
+                                error_msg[0] = "Импорт отменен: неверный номер заказа!"
+                                if progress_win.winfo_exists():
+                                    progress_win.after(0, progress_win.destroy)
+                                return
+                    else:
+                        # Ручной ввод номера (создаем свой диалог)
+                        dialog = tk.Toplevel(progress_win)
+                        dialog.title("Ввод номера заказа")
+                        dialog.geometry("450x220")
+                        dialog.transient(progress_win)
+                        dialog.grab_set()
+                        dialog.resizable(False, False)
+                        
+                        # Центрируем диалог
+                        dialog.update_idletasks()
+                        x = progress_win.winfo_x() + (progress_win.winfo_width() // 2) - (450 // 2)
+                        y = progress_win.winfo_y() + (progress_win.winfo_height() // 2) - (220 // 2)
+                        dialog.geometry(f"450x220+{x}+{y}")
+                        
+                        ttk.Label(dialog, text="Не удалось определить номер заказа!", 
+                                 font=('Arial', 11, 'bold'), foreground='red').pack(pady=10)
+                        ttk.Label(dialog, text=f"В файле: '{order_number_raw}'", 
+                                 font=('Arial', 10)).pack(pady=5)
+                        ttk.Label(dialog, text="Введите корректный номер заказа (только цифры):", 
+                                 font=('Arial', 10)).pack(pady=10)
+                        
+                        entry_var = tk.StringVar(dialog)
+                        entry = ttk.Entry(dialog, textvariable=entry_var, width=20, font=('Arial', 11))
+                        entry.pack(pady=5)
+                        entry.focus()
+                        
+                        result_var = [None]
+                        
+                        def on_ok():
+                            value = entry_var.get().strip()
+                            if value and is_valid_order_number(value):
+                                result_var[0] = value.lstrip('0') or '0'
+                                dialog.destroy()
+                            else:
+                                messagebox.showerror("Ошибка", 
+                                                    "Некорректный номер!\nНомер должен состоять только из цифр.",
+                                                    parent=dialog)
+                        
+                        def on_cancel():
+                            result_var[0] = None
+                            dialog.destroy()
+                        
+                        btn_frame = ttk.Frame(dialog)
+                        btn_frame.pack(pady=15)
+                        ttk.Button(btn_frame, text="OK", command=on_ok, width=12).pack(side=tk.LEFT, padx=10)
+                        ttk.Button(btn_frame, text="Отмена", command=on_cancel, width=12).pack(side=tk.LEFT, padx=10)
+                        
+                        entry.bind('<Return>', lambda e: on_ok())
+                        entry.bind('<Escape>', lambda e: on_cancel())
+                        
+                        dialog.wait_window()
+                        
+                        if result_var[0]:
+                            order_number = result_var[0]
+                        else:
+                            error_msg[0] = "Импорт отменен: неверный номер заказа!"
+                            if progress_win.winfo_exists():
+                                progress_win.after(0, progress_win.destroy)
+                            return
+                    
+                    # Возобновляем анимацию прогресс-бара
+                    progress_bar.start(10)
+                    progress_win.update()
+
+                # Проверка длины номера
+                if not order_number or len(order_number) < 1 or len(order_number) > 10:
+                    error_msg[0] = f"Некорректный номер заказа: '{order_number}'\n" \
+                                  f"Длина номера должна быть от 1 до 10 цифр."
+                    if progress_win.winfo_exists():
+                        progress_win.after(0, progress_win.destroy)
+                    return
+
+                print(f"   Номер заказа (из файла): '{order_number_raw}'")
+                print(f"   Номер заказа (используем): '{order_number}'")
+                
+                status_var.set("Чтение позиций заказа...")
+                progress_win.update()
+                
+                # Читаем изделия
+                items_to_add = []
+                row_idx = 7  # Начинаем с 8-й строки (индекс 7)
+
+                while row_idx < ws.nrows:
+                    cell_a = ws.cell_value(row_idx, 0) if ws.ncols > 0 else None
+                    
+                    # Проверяем, что ячейка A не пустая
+                    if cell_a is None or str(cell_a).strip() == '':
+                        row_idx += 1
+                        continue
+                    
+                    # Проверяем, что это число (номер пункта)
+                    try:
+                        item_num_check = int(float(cell_a))
+                    except (ValueError, TypeError):
+                        row_idx += 1
+                        continue
+                    
+                    # ✅ Получаем наименование (столбец D, индекс 3)
+                    item_name = ""
+                    if ws.ncols > 3:
+                        cell_value = ws.cell_value(row_idx, 3)
+                        item_name = str(cell_value).strip() if cell_value else ""
+                    
+                    # ✅ Получаем артикул из файла (столбец E, индекс 4)
+                    articul_from_file = ""
+                    if ws.ncols > 4:
+                        cell_value = ws.cell_value(row_idx, 4)
+                        if cell_value:
+                            articul_from_file = str(cell_value).strip()
+                            # Очищаем от лишних символов
+                            articul_from_file = re.sub(r'\s+', ' ', articul_from_file)                    
+                    
+                    # ✅ Получаем цвет (столбец F, индекс 5)
+                    color_raw = ""
+                    if ws.ncols > 5:
+                        cell_value = ws.cell_value(row_idx, 5)
+                        color_raw = str(cell_value).strip() if cell_value else ""
+                    
+                    # ✅ ПОЛУЧАЕМ КОЛИЧЕСТВО (столбец I, индекс 8)
+                    quantity = 1  # Значение по умолчанию
+                    if ws.ncols > 8:
+                        cell_value = ws.cell_value(row_idx, 8)
+                        if cell_value:
+                            try:
+                                # Обрабатываем числа (int или float)
+                                if isinstance(cell_value, (int, float)):
+                                    quantity = int(cell_value)
+                                else:
+                                    # Пробуем преобразовать строку в число
+                                    quantity = int(float(str(cell_value).strip()))
+                            except (ValueError, TypeError):
+                                quantity = 1  # Если не удалось преобразовать, оставляем 1
+                            print(f"   Количество: {quantity} (из ячейки I, значение: '{cell_value}')")
+                    
+                    # Проверяем конец данных
+                    if not item_name or 'Итого' in item_name:
+                        break
+                    
+                    # Очищаем наименование
+                    item_name = re.sub(r'\s+', ' ', item_name)
+                    is_nonstandard = "(см.рис.)" in item_name or "см.рис" in item_name.lower()
+                    articul = "см.рис." if is_nonstandard else ""
+                    
+                    if is_nonstandard:
+                        item_name = item_name.replace("(см.рис.)", "").replace("(см.рис)", "").strip()
+                    
+                    # Извлечение цвета металлокаркаса (только если есть "(МК)")
+                    mk_color = ""
+                    if color_raw and color_raw != 'nan' and color_raw != 'None':
+                        if '(МК)' in color_raw or ' МК ' in color_raw or 'МК)' in color_raw:
+                            match = re.search(r'([^;]+?)\s*\(МК\)', color_raw)
+                            if match:
+                                mk_color = match.group(1).strip()
+                                mk_color = re.sub(r'\s*\d+\s*$', '', mk_color).strip()
+                                if ';' in mk_color:
+                                    mk_color = mk_color.split(';')[0].strip()
+                            else:
+                                parts = color_raw.split(';')
+                                for part in parts:
+                                    if '(МК)' in part or 'МК' in part:
+                                        color_part = part.replace('(МК)', '').replace('МК', '').strip()
+                                        color_part = re.sub(r'\s*\d+\s*$', '', color_part).strip()
+                                        if color_part:
+                                            mk_color = color_part
+                                            break
+                        
+                        # Отладка
+                        print(f"   Строка цвета: '{color_raw}'")
+                        print(f"   Цвет МК: '{mk_color}'")
+                    
+                    items_to_add.append({
+                        'name': item_name,
+                        'articul': articul,  # Это будет "см.рис." для нестандартных
+                        'articul_from_file': articul_from_file,  # ✅ Артикул из файла
+                        'item_number': str(item_num_check),
+                        'color': mk_color,
+                        'qty': quantity,
+                        'is_nonstandard': is_nonstandard
+                    })
+                    
+                    row_idx += 1
+                    
+                    # Обновляем статус каждые 5 строк
+                    if (row_idx - 7) % 5 == 0 and progress_win.winfo_exists():
+                        detail_var.set(f"Прочитано позиций: {len(items_to_add)}")
+                        progress_win.update()
+                
+                if not items_to_add:
+                    error_msg[0] = "В файле не найдено изделий для импорта!"
+                    if progress_win.winfo_exists():
+                        progress_win.after(0, progress_win.destroy)
+                    return
+                
+                # ✅ Продолжение импорта (остальной код без изменений)
+                def continue_import():
+                    if not progress_win.winfo_exists():
+                        return
+                    
+                    # Устанавливаем номер заказа
+                    self.order_number.delete(0, tk.END)
+                    self.order_number.insert(0, order_number)
+                    
+                    # Переключаем прогресс-бар на детерминированный режим
+                    if progress_win.winfo_exists():
+                        progress_bar.config(mode='determinate', maximum=len(items_to_add))
+                        progress_bar['value'] = 0
+                    
+                    imported_count = 0
+                    failed_items = []
+                    
+                    # Импорт каждого изделия
+                    for idx, item_data in enumerate(items_to_add, 1):
+                        if not progress_win.winfo_exists():
+                            return
+                        
+                        status_var.set(f"Обработка: {item_data['name'][:50]}...")
+                        detail_var.set(f"Позиция {idx} из {len(items_to_add)}")
+                        
+                        if progress_win.winfo_exists():
+                            progress_bar['value'] = idx
+                            progress_win.update()
+                        
+                        if not item_data['is_nonstandard']:
+                            from database import search_items_by_articul  # Новая функция
+                            
+                            # ✅ Сначала пробуем найти по артикулу (самый надежный способ)
+                            found_item = None
+                            
+                            # Если в файле есть артикул (не пустой и не "см.рис")
+                            if item_data.get('articul_from_file') and item_data['articul_from_file'] not in ['см.рис.', 'см.рис', '']:
+                                # Ищем по артикулу
+                                results = search_items_by_articul(item_data['articul_from_file'])
+                                if results:
+                                    found_item = results[0]  # (name, articul)
+                                    print(f"   ✅ Найдено по артикулу '{item_data['articul_from_file']}': {found_item[0]}")
+                            
+                            # Если по артикулу не нашли - пробуем по наименованию
+                            if not found_item:
+                                from database import search_items
+                                search_query = item_data['name'][:50]  # Увеличил до 50 символов для лучшего поиска
+                                results = search_items(search_query)
+                                if results:
+                                    # Ищем наиболее подходящее совпадение
+                                    best_match = None
+                                    best_score = 0
+                                    
+                                    for name, articul in results:
+                                        # Считаем совпадение по названию
+                                        score = 0
+                                        if item_data['name'].lower() in name.lower():
+                                            score += 10
+                                        elif name.lower() in item_data['name'].lower():
+                                            score += 5
+                                        
+                                        # Если совпадает артикул - большой бонус
+                                        if item_data.get('articul_from_file') and articul == item_data['articul_from_file']:
+                                            score += 100
+                                        
+                                        if score > best_score:
+                                            best_score = score
+                                            best_match = (name, articul)
+                                    
+                                    if best_match:
+                                        found_item = best_match
+                                        print(f"   ✅ Найдено по наименованию: {found_item[0]} (совпадение: {best_score})")
+                            
+                            if found_item:
+                                found_name, found_articul = found_item
+                                item_data['name'] = found_name
+                                item_data['articul'] = found_articul
+                                imported_count += 1
+                            else:
+                                failed_items.append(f"{item_data['name']} (не найдено в базе)")
+                                continue
+                        else:
+                            found_file = self.find_nonstandard_file_by_name(item_data['name'])
+                            
+                            if found_file:
+                                detail_var.set(f"Импорт: {os.path.basename(found_file)}")
+                                if progress_win.winfo_exists():
+                                    progress_win.update()
+                                
+                                from database import import_nonstandard_from_excel
+                                result = import_nonstandard_from_excel(found_file, order_number)
+                                
+                                if result and result[0]:
+                                    imported_name = result[0]
+                                    item_data['name'] = imported_name
+                                    item_data['articul'] = "см.рис."
+                                    imported_count += 1
+                                else:
+                                    failed_items.append(f"{item_data['name']} (ошибка импорта)")
+                                    continue
+                            else:
+                                failed_items.append(f"{item_data['name']} (файл не найден)")
+                                continue
+                        
+                        self.order_items.append({
+                            'name': item_data['name'],
+                            'articul': item_data['articul'],
+                            'qty': item_data['qty'],
+                            'color': item_data['color'],
+                            'item_number': item_data['item_number']
+                        })
+                    
+                    # Завершаем импорт
+                    if progress_win.winfo_exists():
+                        status_var.set("Обновление интерфейса...")
+                        progress_win.update()
+                    
+                    self.update_order_display()
+                    self.recalculate_totals()
+                    
+                    # Отчет об импорте
+                    success_msg = f"Заказ №{order_number} импортирован!\n\n"
+                    success_msg += f"✅ Успешно: {imported_count} из {len(items_to_add)}\n"
+                    
+                    if failed_items:
+                        success_msg += f"\n❌ Не найдено:\n"
+                        for item in failed_items[:5]:
+                            success_msg += f"   • {item}\n"
+                        if len(failed_items) > 5:
+                            success_msg += f"   ... и ещё {len(failed_items) - 5}\n"
+                        success_msg += f"\nЭти позиции можно добавить вручную через поиск."
+                    
+                    if progress_win.winfo_exists():
+                        progress_win.destroy()
+                    messagebox.showinfo("Импорт завершен", success_msg)
+                
+                def check_order_change():
+                    current_order = self.order_number.get().strip()
+                    if current_order and current_order != order_number:
+                        if not messagebox.askyesno("Внимание",
+                            f"Сейчас открыт заказ №{current_order}!\n"
+                            f"Выбранный файл относится к заказу №{order_number}.\n"
+                            f"Продолжить? (текущий заказ будет очищен)"):
+                            return False
+                        self.order_items = []
+                        self.update_order_display()
+                    return True
+                
+                # Выполняем проверку в главном потоке
+                if check_order_change():
+                    continue_import()
+                else:
+                    if progress_win.winfo_exists():
+                        progress_win.destroy()
+                
+            except Exception as e:
+                error_msg[0] = f"Не удалось импортировать файл:\n{e}"
+                import traceback
+                traceback.print_exc()
+                if progress_win.winfo_exists():
+                    progress_win.after(0, progress_win.destroy)
+        
+        # Запускаем импорт в отдельном потоке
+        thread = threading.Thread(target=do_import)
+        thread.daemon = True
+        thread.start()
+        
+        # Проверяем завершение потока
+        def check_thread():
+            if thread.is_alive():
+                if progress_win.winfo_exists():
+                    progress_win.after(100, check_thread)
+            else:
+                if error_msg[0] and progress_win.winfo_exists():
+                    progress_win.after(0, lambda: messagebox.showerror("Ошибка импорта", error_msg[0]))
+                if progress_win.winfo_exists():
+                    progress_win.after(0, progress_win.destroy)
+        
+        progress_win.after(100, check_thread)
+
+    def find_nonstandard_file_by_name(self, item_name):
+        """Поиск файла нестандартного изделия по названию в Y:\Excel для мк"""
+        import os
+        import re
+        
+        base_path = r"Y:\Excel для мк"
+        if not os.path.exists(base_path):
+            print(f"⚠️ Папка не найдена: {base_path}")
+            return None
+        
+        # Очищаем название от лишних символов для поиска
+        clean_name = re.sub(r'[^\w\sа-яА-ЯёЁ0-9хХx]', '', item_name)
+        clean_name = clean_name.lower()
+        
+        print(f"🔍 Поиск файла для: {item_name}")
+        print(f"   Очищенное название: {clean_name}")
+        
+        # Ищем файлы
+        for filename in os.listdir(base_path):
+            if filename.lower().endswith(('.xls', '.xlsx')):
+                # Извлекаем название из имени файла (до первого "_")
+                file_base_name = filename.split('_')[0] if '_' in filename else filename
+                file_base_name = re.sub(r'[^\w\sа-яА-ЯёЁ0-9хХx]', '', file_base_name)
+                file_base_name = file_base_name.lower()
+                
+                # Проверяем совпадение
+                if clean_name in file_base_name or file_base_name in clean_name:
+                    file_path = os.path.join(base_path, filename)
+                    print(f"   ✅ Найдено совпадение: {filename}")
+                    return file_path
+        
+        print(f"   ❌ Файл не найден")
+        return None
+
+    def save_order_btn(self):
+        """Кнопка сохранения заказа с поддержкой перепроведения"""
+        order_number = self.order_number.get().strip()
+        if not order_number:
+            messagebox.showwarning("Внимание", "Введите номер заказа!")
+            self.order_number.focus()
+            return False
+        
+        if not self.order_items:
+            messagebox.showwarning("Внимание", "Заказ пуст!")
+            return False
+        
+        # ✅ ПРОВЕРЯЕМ, БЫЛ ЛИ ЗАКАЗ ЗАГРУЖЕН И ПРОВЕДЁН
+        was_deducted = False
+        old_order_year = None
+        
+        # ✅ ВАЖНО: Проверяем что current_order_info существует И номер заказа совпадает!
+        if hasattr(self, 'current_order_info') and self.current_order_info:
+            if self.current_order_info.get('order_number') == order_number:
+                was_deducted = self.current_order_info.get('is_deducted', False)
+                old_order_year = self.current_order_info.get('order_year')
+            else:
+                # ✅ Номер заказа изменился - сбрасываем информацию!
+                print(f"🔄 Номер заказа изменился: {self.current_order_info.get('order_number')} → {order_number}")
+                self.current_order_info = None
+        
+        # ✅ СОЗДАЁМ БЭКАП ПЕРЕД СОХРАНЕНИЕМ!
+        order_year = old_order_year if old_order_year else datetime.now().year
+        from order_backup import create_order_backup
+        backup_file = create_order_backup(order_number, self.order_items, order_year)
+        if backup_file:
+            print(f"✅ Бэкап создан перед сохранением: {backup_file}")
+        
+        # Создаем кастомный диалог с тремя кнопками
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Сохранение заказа")
+        dialog.geometry("550x250")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text=f"Заказ №{order_number}", font=('Arial', 12, 'bold')).pack(pady=10)
+        ttk.Label(dialog, text=f"Позиций в заказе: {len(self.order_items)}", font=('Arial', 10)).pack(pady=5)
+        
+        # ✅ ПРЕДУПРЕЖДЕНИЕ ЕСЛИ ЗАКАЗ БЫЛ ПРОВЕДЁН
+        if was_deducted:
+            ttk.Label(dialog, text="⚠️ ЗАКАЗ БЫЛ ПРОВЕДЕН!", 
+                     font=('Arial', 10, 'bold'), foreground='red').pack(pady=5)
+            ttk.Label(dialog, text="При перепроведении старые материалы вернутся на склад,\n"
+                                  "новые будут списаны согласно изменениям.",
+                     font=('Arial', 9), foreground='orange').pack(pady=5)
+        
+        ttk.Label(dialog, text="Что сделать с заказом?", font=('Arial', 10)).pack(pady=10)
+        
+        result = [None]  # None = отмена, 'save' = сохранить, 'deduct' = сохранить и провести
+        
+        def save_only():
+            result[0] = 'save'
+            dialog.destroy()
+        
+        def save_and_deduct():
+            result[0] = 'deduct'
+            dialog.destroy()
+        
+        def cancel():
+            result[0] = None
+            dialog.destroy()
+        
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=15)
+        ttk.Button(btn_frame, text="💾 Сохранить", command=save_only, width=18).pack(side=tk.LEFT, padx=10)
+        
+        # ✅ МЕНЯЕМ ТЕКСТ КНОПКИ ЕСЛИ ЗАКАЗ БЫЛ ПРОВЕДЁН
+        deduct_btn_text = "🔄 Перепровести" if was_deducted else "✅ Сохранить и провести"
+        ttk.Button(btn_frame, text=deduct_btn_text, command=save_and_deduct, width=30).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="↩️ Отмена", command=cancel, width=15).pack(side=tk.LEFT, padx=10)
+        
+        dialog.wait_window()
+        
+        if result[0] is None:
+            return False
+        
+        from orders_db import save_order
+        save_result = save_order(order_number, self.order_items)
+            
+        if not save_result:
+            messagebox.showerror("Ошибка", "Не удалось сохранить заказ!")
+            return False
+        
+        # ✅ ЕСЛИ ВЫБРАНО ПЕРЕПРОВЕДЕНИЕ
+        if result[0] == 'deduct':
+            order_year = old_order_year if old_order_year else datetime.now().year
+            
+            # ✅ ЕСЛИ ЗАКАЗ БЫЛ ПРОВЕДЁН - ВОЗВРАЩАЕМ СТАРЫЕ МАТЕРИАЛЫ
+            if was_deducted and hasattr(self, 'current_order_info'):
+                from inventory_db import cancel_order_deduction
+                old_order_number = self.current_order_info.get('order_number')
+                old_order_year = self.current_order_info.get('order_year')
+                
+                if old_order_number and old_order_year:
+                    print(f"↩️ Возврат материалов от старого заказа {old_order_number} ({old_order_year})")
+                    cancel_order_deduction(old_order_number, old_order_year)
+            
+            # ✅ СПИСЫВАЕМ НОВЫЕ МАТЕРИАЛЫ
+            self.deduct_order_materials(order_number, order_year)
+            
+            # ✅ ОБНОВЛЯЕМ ИНФОРМАЦИЮ О ЗАКАЗЕ
+            if hasattr(self, 'current_order_info'):
+                self.current_order_info['is_deducted'] = True
+                self.current_order_info['order_number'] = order_number
+                self.current_order_info['order_year'] = order_year
+            
+            messagebox.showinfo("Успех", f"Заказ №{order_number} сохранён и проведён!")
+        else:
+            messagebox.showinfo("Успех", f"Заказ №{order_number} сохранён!")
+        
+        return True
+
+    def get_order_year(self, order_number):
+        """Определение года заказа по номеру"""
+        # Проверяем в базе заказов, к какому году относится
+        from orders_db import get_order
+        order = get_order(order_number)
+        
+        if order and order.get('order_year'):
+            return order['order_year']
+        
+        # Если года нет, определяем по текущей дате
+        # Но можно добавить логику поиска по существующим заказам
+        return datetime.now().year
+
+    def deduct_order_materials(self, order_number, order_year):
+        """Списание материалов для заказа"""
+        from inventory_db import deduct_order_materials, get_all_materials
+        
+        # Собираем материалы из заказа
+        materials = {}
+        for item in self.order_items:
+            from database import get_materials_for_item
+            # ✅ Теперь mats возвращает (material_name, consumption)
+            # consumption — это расход материала в метрах/м² на ОДНО изделие
+            mats, _ = get_materials_for_item(item['name'], item['articul'])
+            
+            for mat_name, consumption in mats:
+                # ✅ consumption — это метраж на 1 изделие
+                # item['qty'] — количество изделий
+                # total_qty = общий метраж на все изделия
+                total_qty = consumption * item['qty']
+                
+                if mat_name in materials:
+                    materials[mat_name] += total_qty
+                else:
+                    materials[mat_name] = total_qty
+                
+                print(f"📊 Материал: {mat_name}")
+                print(f"   Расход на 1 изд.: {consumption} м")
+                print(f"   Количество изделий: {item['qty']}")
+                print(f"   Итого к списанию: {total_qty} м")
+        
+        print(f"\n💾 Всего к списанию:")
+        for mat_name, total_qty in materials.items():
+            print(f"   {mat_name}: {total_qty} м")
+        
+        if deduct_order_materials(order_number, order_year, materials):
+            messagebox.showinfo("Успех",
+                f"Заказ №{order_number} ({order_year}) списан!\n"
+                f"Списано материалов: {len(materials)} позиций")
+        else:
+            messagebox.showerror("Ошибка", "Не удалось списать заказ!")
+            
+    def open_inventory(self):
+        from inventory_db import init_inventory_db, get_all_materials, add_material, add_transaction, update_material_quantity
+        init_inventory_db()
+        inv_win = tk.Toplevel(self.root)
+        inv_win.title("📦 Склад материалов")
+        inv_win.geometry("1100x750")
+        inv_win.transient(self.root)
+        inv_win.grab_set()
+        
+        # Центрируем окно относительно главного
+        inv_win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (1100 // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (750 // 2)
+        inv_win.geometry(f"1100x750+{x}+{y}")
+        
+        # Вкладки
+        notebook = ttk.Notebook(inv_win)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # ========== ВКЛАДКА 1: МАТЕРИАЛЫ ==========
+        materials_frame = ttk.Frame(notebook)
+        notebook.add(materials_frame, text="📋 Материалы")
+        
+        # Таблица материалов с сортировкой
+        columns = ('ID', 'Наименование', 'Ед.', 'Количество', 'Цена', 'Сумма')
+        mat_tree = ttk.Treeview(materials_frame, columns=columns, show='headings', height=22)
+        
+        # Заголовки с сортировкой
+        sort_order = {col: False for col in columns}
+        
+        def sort_treeview(col):
+            nonlocal sort_order
+            items = [(mat_tree.set(item, col), item) for item in mat_tree.get_children('')]
+            try:
+                items.sort(key=lambda t: float(t[0].replace(',', '.')), reverse=sort_order[col])
+            except:
+                items.sort(key=lambda t: t[0], reverse=sort_order[col])
+            for index, (val, item) in enumerate(items):
+                mat_tree.move(item, '', index)
+            sort_order[col] = not sort_order[col]
+        
+        for col in columns:
+            mat_tree.heading(col, text=col, command=lambda c=col: sort_treeview(c))
+            mat_tree.column(col, width=100 if col != 'Наименование' else 300)
+        
+        mat_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # ✅ НАСТРОЙКА ЦВЕТОВ ДЛЯ МИНУСОВЫХ ОСТАТКОВ
+        mat_tree.tag_configure('negative', background='#ffcccc')
+        mat_tree.tag_configure('normal', background='white')
+        
+        # Фрейм для итогов
+        total_frame = ttk.Frame(materials_frame)
+        total_frame.pack(fill=tk.X, padx=5, pady=5)
+        total_label = ttk.Label(total_frame, text="Всего на складе на сумму: 0.00 ₽",
+                               font=('Arial', 11, 'bold'), foreground='blue')
+        total_label.pack(side=tk.RIGHT)
+        
+        # Загрузка материалов
+        def load_materials():
+            for item in mat_tree.get_children():
+                mat_tree.delete(item)
+            materials = get_all_materials()
+            total_sum = 0
+            for mat in materials:
+                total = mat['quantity'] * mat['price']
+                total_sum += total
+                # ✅ ПРОВЕРЯЕМ НА МИНУСОВОЙ ОСТАТОК
+                if mat['quantity'] < 0:
+                    tag = 'negative'
+                else:
+                    tag = 'normal'
+                mat_tree.insert('', tk.END, values=(
+                    mat['id'],
+                    mat['name'],
+                    mat['unit'],
+                    f"{mat['quantity']:.2f}",
+                    f"{mat['price']:.2f}",
+                    f"{total:.2f}"
+                ), tags=(tag,))
+            total_label.config(text=f"Всего на складе на сумму: {total_sum:,.2f} ₽")
+        
+        load_materials()
+        
+        # Кнопки
+        btn_frame = ttk.Frame(materials_frame)
+        btn_frame.pack(pady=10)
+        
+        def add_material_func():
+            dialog = tk.Toplevel(inv_win)
+            dialog.title("Добавить материал")
+            dialog.geometry("400x350")
+            dialog.transient(inv_win)
+            dialog.grab_set()
+            
+            ttk.Label(dialog, text="Наименование:").pack(pady=5)
+            name_entry = ttk.Entry(dialog, width=40)
+            name_entry.pack(pady=5)
+            
+            ttk.Label(dialog, text="Единица измерения:").pack(pady=5)
+            unit_var = tk.StringVar(master=dialog, value='м.п.')
+            unit_combo = ttk.Combobox(dialog, textvariable=unit_var, width=37)
+            unit_combo['values'] = ['м.п.', 'шт.', 'кг.', 'м²', 'лист']
+            unit_combo.pack(pady=5)
+            
+            ttk.Label(dialog, text="Количество:").pack(pady=5)
+            qty_entry = ttk.Entry(dialog, width=40)
+            qty_entry.pack(pady=5)
+            
+            ttk.Label(dialog, text="Цена за ед.:").pack(pady=5)
+            price_entry = ttk.Entry(dialog, width=40)
+            price_entry.pack(pady=5)
+            
+            def save():
+                name = name_entry.get().strip()
+                if not name:
+                    messagebox.showwarning("Внимание", "Введите наименование!", parent=dialog)
+                    return
+                try:
+                    qty = float(qty_entry.get().strip() or 0)
+                    price = float(price_entry.get().strip() or 0)
+                except ValueError:
+                    messagebox.showerror("Ошибка", "Количество и цена должны быть числами!", parent=dialog)
+                    return
+                if add_material(name, unit_var.get(), qty, price):
+                    messagebox.showinfo("Успех", "Материал добавлен!", parent=dialog)
+                    dialog.destroy()
+                    load_materials()
+                else:
+                    messagebox.showerror("Ошибка", "Не удалось добавить материал!", parent=dialog)
+            
+            ttk.Button(dialog, text="Сохранить", command=save).pack(pady=10)
+        
+        def edit_material_func():
+            """Изменение материала (цена + единица измерения)"""
+            selection = mat_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите материал для изменения!")
+                return
+            item = mat_tree.item(selection[0])
+            values = item['values']
+            material_id = values[0]
+            material_name = values[1]
+            current_unit = values[2]
+            current_price = float(values[4])
+            
+            dialog = tk.Toplevel(inv_win)
+            dialog.title("Изменить материал")
+            dialog.geometry("400x250")
+            dialog.transient(inv_win)
+            dialog.grab_set()
+            
+            # Центрируем диалог
+            dialog.update_idletasks()
+            x = inv_win.winfo_x() + (inv_win.winfo_width() // 2) - (400 // 2)
+            y = inv_win.winfo_y() + (inv_win.winfo_height() // 2) - (250 // 2)
+            dialog.geometry(f"400x250+{x}+{y}")
+            
+            ttk.Label(dialog, text=f"Материал: {material_name}", font=('Arial', 10, 'bold')).pack(pady=10)
+            
+            # ✅ Единица измерения (выпадающий список)
+            ttk.Label(dialog, text="Единица измерения:").pack(pady=5)
+            unit_var = tk.StringVar(master=dialog, value=current_unit)
+            unit_combo = ttk.Combobox(dialog, textvariable=unit_var, width=37, state='readonly')
+            unit_combo['values'] = ['м.п.', 'шт.', 'кг.', 'м²', 'лист']
+            unit_combo.pack(pady=5)
+            
+            # ✅ Цена
+            ttk.Label(dialog, text="Цена за ед.:").pack(pady=5)
+            price_entry = ttk.Entry(dialog, width=40)
+            price_entry.pack(pady=5)
+            price_entry.insert(0, f"{current_price:.2f}")
+            
+            def save():
+                try:
+                    new_price = float(price_entry.get().strip().replace(',', '.'))
+                    if new_price < 0:
+                        raise ValueError("Цена не может быть отрицательной")
+                except ValueError as e:
+                    messagebox.showerror("Ошибка", f"Неверная цена: {e}", parent=dialog)
+                    return
+                from inventory_db import get_connection
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute('UPDATE materials_stock SET price = ?, unit = ? WHERE id = ?',
+                         (new_price, unit_var.get(), material_id))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Успех", "Материал обновлён!", parent=dialog)
+                dialog.destroy()
+                load_materials()
+            
+            ttk.Button(dialog, text="Сохранить", command=save).pack(pady=20)
+        
+        ttk.Button(btn_frame, text="➕ Добавить", command=add_material_func).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✏️ Изменить", command=edit_material_func).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🔄 Обновить", command=load_materials).pack(side=tk.LEFT, padx=5)
+        
+        # ========== ВКЛАДКА 2: ПРИХОД/РАСХОД ==========
+        transaction_frame = ttk.Frame(notebook)
+        notebook.add(transaction_frame, text="📊 Приход/Расход")
+        
+        # Фильтры
+        filter_frame = ttk.Frame(transaction_frame)
+        filter_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(filter_frame, text="Год:").pack(side=tk.LEFT, padx=5)
+        year_var = tk.StringVar(master=filter_frame, value=str(datetime.now().year))
+        year_entry = ttk.Entry(filter_frame, textvariable=year_var, width=10)
+        year_entry.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(filter_frame, text="Заказ №:").pack(side=tk.LEFT, padx=5)
+        order_entry = ttk.Entry(filter_frame, width=10)
+        order_entry.pack(side=tk.LEFT, padx=5)
+        
+        # ✅ ЧЕКБОКСЫ ДЛЯ ФИЛЬТРАЦИИ ПО ТИПАМ
+        ttk.Label(filter_frame, text="Типы:").pack(side=tk.LEFT, padx=(10, 5))
+        show_arrival_var = tk.BooleanVar(master=filter_frame, value=False)
+        show_inventory_var = tk.BooleanVar(master=filter_frame, value=False)
+        show_consumption_var = tk.BooleanVar(master=filter_frame, value=False)
+        
+        ttk.Checkbutton(filter_frame, text="Приход", variable=show_arrival_var,
+                       command=lambda: load_transactions()).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(filter_frame, text="Инвентаризация", variable=show_inventory_var,
+                       command=lambda: load_transactions()).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(filter_frame, text="Расход", variable=show_consumption_var,
+                       command=lambda: load_transactions()).pack(side=tk.LEFT, padx=2)
+        
+        # ✅ СНАЧАЛА СОЗДАЁМ trans_tree
+        trans_columns = ('ID', 'Материал', 'Тип', 'Количество', 'Заказ', 'Год', 'Примечание', 'Дата')
+        trans_tree = ttk.Treeview(transaction_frame, columns=trans_columns, show='headings', height=18)
+        
+        for col in trans_columns:
+            trans_tree.heading(col, text=col)
+            if col == 'Материал':
+                trans_tree.column(col, width=250)
+            elif col == 'Примечание':
+                trans_tree.column(col, width=200)
+            else:
+                trans_tree.column(col, width=100)
+        
+        trans_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Настройка цветов
+        trans_tree.tag_configure('red', foreground='red')
+        trans_tree.tag_configure('blue', foreground='blue')
+        trans_tree.tag_configure('green', foreground='green')
+        
+        # ✅ ПОТОМ определяем функцию load_transactions()
+        def load_transactions():
+            for item in trans_tree.get_children():
+                trans_tree.delete(item)
+            year = int(year_var.get()) if year_var.get().isdigit() else None
+            order_num = order_entry.get().strip() or None
+            
+            # ✅ ПОЛУЧАЕМ ЗНАЧЕНИЯ ЧЕКБОКСОВ
+            show_arrival = show_arrival_var.get()
+            show_inventory = show_inventory_var.get()
+            show_consumption = show_consumption_var.get()
+            
+            from inventory_db import get_transactions
+            transactions = get_transactions(order_number=order_num, order_year=year)
+            
+            print(f"\n📊 Загрузка транзакций:")
+            print(f"   Фильтры: Приход={show_arrival}, Инвентаризация={show_inventory}, Расход={show_consumption}")
+            print(f"   Найдено всего: {len(transactions)}")
+            
+            for t in transactions:
+                transaction_type = t.get('transaction_type', '')
+                
+                # ✅ ФИЛЬТРУЕМ ПО ТИПАМ
+                if not show_arrival and not show_inventory and not show_consumption:
+                    pass  # Показываем все если ничего не отмечено
+                elif transaction_type == 'приход' and not show_arrival:
+                    continue
+                elif transaction_type == 'инвентаризация' and not show_inventory:
+                    continue
+                elif transaction_type == 'расход' and not show_consumption:
+                    continue
+                
+                print(f"   - Тип: '{transaction_type}'")
+                
+                if transaction_type == 'расход':
+                    color = 'red'
+                elif transaction_type == 'приход':
+                    color = 'blue'
+                elif transaction_type == 'инвентаризация':
+                    color = 'green'
+                else:
+                    color = 'black'
+                
+                # ✅ ДОБАВЛЕНО: Примечание в таблицу
+                trans_tree.insert('', tk.END, values=(
+                    t.get('id', ''),
+                    t.get('material_name') or 'N/A',
+                    t.get('transaction_type', ''),
+                    f"{t.get('quantity', 0):.2f}",
+                    t.get('order_number') or '-',
+                    t.get('order_year') or '-',
+                    t.get('comment', '') or '-',  # ✅ Примечание
+                    t.get('created_at', '')[:16] if t.get('created_at') else ''
+                ), tags=(color,))
+        
+        # Кнопки
+        trans_btn_frame = ttk.Frame(transaction_frame)
+        trans_btn_frame.pack(pady=10)
+        
+        def add_inventory():
+            """Инвентаризация/Приход"""
+            dialog = tk.Toplevel(inv_win)
+            dialog.title("Приход/Инвентаризация")
+            dialog.geometry("450x400")
+            dialog.transient(inv_win)
+            dialog.grab_set()
+            
+            # Центрируем диалог
+            dialog.update_idletasks()
+            x = inv_win.winfo_x() + (inv_win.winfo_width() // 2) - (450 // 2)
+            y = inv_win.winfo_y() + (inv_win.winfo_height() // 2) - (400 // 2)
+            dialog.geometry(f"450x400+{x}+{y}")
+            
+            ttk.Label(dialog, text="Материал:").pack(pady=5)
+            mat_var = tk.StringVar(master=dialog)
+            mat_combo = ttk.Combobox(dialog, textvariable=mat_var, width=42)
+            materials = get_all_materials()
+            mat_combo['values'] = [m['name'] for m in materials]
+            mat_combo.pack(pady=5)
+            
+            ttk.Label(dialog, text="Тип:").pack(pady=5)
+            type_var = tk.StringVar(master=dialog, value='приход')
+            type_combo = ttk.Combobox(dialog, textvariable=type_var, width=42, state='readonly')
+            type_combo['values'] = ['приход', 'инвентаризация']
+            type_combo.pack(pady=5)
+            
+            ttk.Label(dialog, text="Количество:").pack(pady=5)
+            ttk.Label(dialog, text="(для инвентаризации можно вводить отрицательные значения)",
+                     font=('Arial', 8), foreground='gray').pack()
+            qty_entry = ttk.Entry(dialog, width=40)
+            qty_entry.pack(pady=5)
+            
+            # ✅ ПОЛЕ ДЛЯ ПРИМЕЧАНИЯ
+            ttk.Label(dialog, text="Примечание:").pack(pady=5)
+            ttk.Label(dialog, text="(номер счета, дата поставки и т.д.)",
+                     font=('Arial', 8), foreground='gray').pack()
+            comment_entry = ttk.Entry(dialog, width=40)
+            comment_entry.pack(pady=5)
+            
+            def save():
+                if not mat_var.get():
+                    messagebox.showwarning("Внимание", "Выберите материал!", parent=dialog)
+                    return
+                try:
+                    qty = float(qty_entry.get().strip())
+                except ValueError:
+                    messagebox.showerror("Ошибка", "Количество должно быть числом!", parent=dialog)
+                    return
+                
+                from inventory_db import get_connection
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute('SELECT id, quantity FROM materials_stock WHERE name = ?', (mat_var.get(),))
+                row = c.fetchone()
+                conn.close()
+                
+                if not row:
+                    messagebox.showerror("Ошибка", "Материал не найден!", parent=dialog)
+                    return
+                
+                material_id = row['id']
+                current_qty = row['quantity']
+                transaction_type = type_var.get()
+                comment = comment_entry.get().strip()
+                
+                print(f"\n💾 Сохранение транзакции:")
+                print(f"   Материал: {mat_var.get()}")
+                print(f"   Тип: {transaction_type}")
+                print(f"   Количество: {qty}")
+                print(f"   Примечание: {comment}")
+                
+                # ✅ ДОБАВЛЯЕМ ТРАНЗАКЦИЮ С ПРИМЕЧАНИЕМ
+                add_transaction(material_id, transaction_type, qty, comment=comment)
+                
+                # ✅ ОБНОВЛЯЕМ КОЛИЧЕСТВО НА СКЛАДЕ
+                if transaction_type == 'приход':
+                    new_qty = current_qty + qty
+                    update_material_quantity(material_id, new_qty)
+                    print(f"   ✅ Приход: {current_qty} + {qty} = {new_qty}")
+                elif transaction_type == 'инвентаризация':
+                    new_qty = current_qty + qty
+                    update_material_quantity(material_id, new_qty)
+                    print(f"   ✅ Инвентаризация: {current_qty} + ({qty}) = {new_qty}")
+                
+                messagebox.showinfo("Успех",
+                                   f"Транзакция добавлена!\n"
+                                   f"Тип: {transaction_type}\n"
+                                   f"Количество: {qty}\n"
+                                   f"На складе: {new_qty:.2f}",
+                                   parent=dialog)
+                dialog.destroy()
+                load_transactions()
+                load_materials()
+            
+            ttk.Button(dialog, text="Сохранить", command=save).pack(pady=10)
+        
+        ttk.Button(trans_btn_frame, text="📥 Приход/Инвентаризация", command=add_inventory).pack(side=tk.LEFT, padx=5)
+        
+        # ✅ АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ДАННЫХ ПРИ ОТКРЫТИИ ВКЛАДКИ
+        inv_win.after(100, load_transactions)
+        
+        # ========== ВКЛАДКА 3: СПИСАНИЕ ЗАКАЗОВ ==========
+        deduct_frame = ttk.Frame(notebook)
+        notebook.add(deduct_frame, text="📝 Списание заказов")
+        
+        deduct_columns = ('Заказ', 'Год', 'Статус', 'Дата списания')
+        deduct_tree = ttk.Treeview(deduct_frame, columns=deduct_columns, show='headings', height=20)
+        
+        for col in deduct_columns:
+            deduct_tree.heading(col, text=col)
+        
+        deduct_tree.column('Заказ', width=100)
+        deduct_tree.column('Год', width=80)
+        deduct_tree.column('Статус', width=100)
+        deduct_tree.column('Дата списания', width=150)
+        
+        deduct_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # ✅ ДОБАВЛЕНО: Обработчик двойного клика
+        deduct_tree.bind('<Double-1>', lambda e: show_deducted_details())
+        
+        def load_deducted():
+            for item in deduct_tree.get_children():
+                deduct_tree.delete(item)
+            from inventory_db import get_connection
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute('SELECT * FROM deducted_orders ORDER BY deducted_at DESC')
+            orders = c.fetchall()
+            conn.close()
+            for o in orders:
+                deduct_tree.insert('', tk.END, values=(
+                    o['order_number'],
+                    o['order_year'],
+                    '✅ Списан',
+                    o['deducted_at'][:16] if o['deducted_at'] else ''
+                ))
+        
+        def show_deducted_details():
+            """✅ Показывает детали списания по двойному клику"""
+            selection = deduct_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для просмотра деталей!")
+                return
+            item = deduct_tree.item(selection[0])
+            order_number = item['values'][0]
+            order_year = item['values'][1]
+            
+            from inventory_db import get_deducted_materials
+            materials = get_deducted_materials(order_number, order_year)
+            
+            if not materials:
+                messagebox.showinfo("Информация",
+                                   f"Для заказа №{order_number} ({order_year})\n"
+                                   f"не найдено списанных материалов.")
+                return
+            
+            # Создаем окно с деталями
+            details_win = tk.Toplevel(inv_win)
+            details_win.title(f"📋 Детали списания заказа №{order_number}")
+            details_win.geometry("700x500")
+            details_win.transient(inv_win)
+            details_win.grab_set()
+            
+            # Центрируем окно
+            details_win.update_idletasks()
+            x = inv_win.winfo_x() + (inv_win.winfo_width() // 2) - (700 // 2)
+            y = inv_win.winfo_y() + (inv_win.winfo_height() // 2) - (500 // 2)
+            details_win.geometry(f"700x500+{x}+{y}")
+            
+            # Заголовок
+            ttk.Label(details_win, text=f"Заказ №{order_number} ({order_year})",
+                     font=('Arial', 12, 'bold')).pack(pady=10)
+            
+            # Таблица материалов
+            tree_frame = ttk.Frame(details_win)
+            tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            
+            columns = ('Материал', 'Ед.', 'Количество', 'Дата')
+            mat_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+            
+            for col in columns:
+                mat_tree.heading(col, text=col)
+            
+            mat_tree.column('Материал', width=300)
+            mat_tree.column('Ед.', width=60)
+            mat_tree.column('Количество', width=100)
+            mat_tree.column('Дата', width=140)
+            
+            scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=mat_tree.yview)
+            mat_tree.configure(yscrollcommand=scrollbar.set)
+            mat_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Заполняем таблицу
+            total_materials = 0
+            for mat in materials:
+                mat_tree.insert('', tk.END, values=(
+                    mat.get('material_name') or 'N/A',
+                    mat.get('material_unit') or 'м.п.',
+                    f"{mat.get('quantity', 0):.2f}",
+                    mat.get('created_at', '')[:16] if mat.get('created_at') else ''
+                ))
+                total_materials += 1
+            
+            # Итоги
+            info_frame = ttk.Frame(details_win)
+            info_frame.pack(fill=tk.X, padx=10, pady=5)
+            ttk.Label(info_frame, text=f"Всего списано материалов: {total_materials} поз.",
+                     font=('Arial', 10, 'bold'), foreground='blue').pack(side=tk.LEFT)
+            
+            # Кнопки
+            btn_frame = ttk.Frame(details_win)
+            btn_frame.pack(pady=10)
+            ttk.Button(btn_frame, text="❌ Закрыть", command=details_win.destroy, width=15).pack()
+            
+            # Подсказка
+            ttk.Label(details_win, text="💡 Двойной клик для просмотра деталей",
+                     font=('Arial', 8), foreground='gray').pack(pady=5)
+        
+        def cancel_deduction():
+            """Отмена списания выбранного заказа"""
+            selection = deduct_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для отмены списания!")
+                return
+            item = deduct_tree.item(selection[0])
+            order_number = item['values'][0]
+            order_year = item['values'][1]
+            
+            if not messagebox.askyesno("Подтверждение",
+                                      f"Отменить списание заказа №{order_number} ({order_year})?\n"
+                                      f"Все материалы будут возвращены на склад."):
+                return
+            
+            from inventory_db import cancel_order_deduction
+            if cancel_order_deduction(order_number, order_year):
+                messagebox.showinfo("Успех",
+                                   f"Списание заказа №{order_number} отменено!\n"
+                                   f"Материалы возвращены на склад.")
+                load_deducted()
+                load_materials()
+                load_transactions()
+            else:
+                messagebox.showerror("Ошибка", "Не удалось отменить списание!")
+        
+        # ✅ ОДНА КНОПКА "Отозвать списание"
+        deduct_btn_frame = ttk.Frame(deduct_frame)
+        deduct_btn_frame.pack(pady=10)
+        ttk.Button(deduct_btn_frame, text="↩️ Отозвать списание", command=cancel_deduction).pack(side=tk.LEFT, padx=5)
+        ttk.Button(deduct_btn_frame, text="📋 Просмотр деталей", command=show_deducted_details).pack(side=tk.LEFT, padx=5)
+        
+        # ✅ АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ПРИ ОТКРЫТИИ
+        inv_win.after(200, load_deducted)
+        
+        # ========== ВКЛАДКА 4: ОТЧЕТ ==========
+        report_frame = ttk.Frame(notebook)
+        notebook.add(report_frame, text="📈 Отчет")
+        
+        # Выбор периода
+        period_frame = ttk.LabelFrame(report_frame, text="Период отчета", padding=10)
+        period_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        period_var = tk.StringVar(master=period_frame, value='month')
+        
+        # Фрейм для календарей (скрыт по умолчанию)
+        custom_date_frame = ttk.Frame(period_frame)
+        
+        ttk.Label(custom_date_frame, text="С:").pack(side=tk.LEFT, padx=5)
+        
+        # ✅ ДОБАВЛЯЕМ КАЛЕНДАРИ (нужен tkcalendar)
+        try:
+            from tkcalendar import DateEntry
+            start_date_entry = DateEntry(custom_date_frame, width=12,
+                                        background='darkblue', foreground='white',
+                                        borderwidth=2, locale='ru_RU')
+            start_date_entry.pack(side=tk.LEFT, padx=5)
+            
+            ttk.Label(custom_date_frame, text="По:").pack(side=tk.LEFT, padx=5)
+            
+            end_date_entry = DateEntry(custom_date_frame, width=12,
+                                      background='darkblue', foreground='white',
+                                      borderwidth=2, locale='ru_RU')
+            end_date_entry.pack(side=tk.LEFT, padx=5)
+            
+            
+            CALENDARS_AVAILABLE = True
+        except ImportError:
+            # Если tkcalendar не установлен — показываем обычные Entry
+            ttk.Label(custom_date_frame, text="(установите tkcalendar: pip install tkcalendar)").pack(side=tk.LEFT, padx=5)
+            start_date_entry = ttk.Entry(custom_date_frame, width=12)
+            start_date_entry.pack(side=tk.LEFT, padx=5)
+            start_date_entry.insert(0, (datetime.now() - timedelta(days=30)).strftime('%d.%m.%Y'))
+            
+            ttk.Label(custom_date_frame, text="По:").pack(side=tk.LEFT, padx=5)
+            
+            end_date_entry = ttk.Entry(custom_date_frame, width=12)
+            end_date_entry.pack(side=tk.LEFT, padx=5)
+            end_date_entry.insert(0, datetime.now().strftime('%d.%m.%Y'))
+            
+            CALENDARS_AVAILABLE = False
+        
+        def update_report():
+            """Обновление отчета"""
+            # Очистка таблицы
+            for item in report_tree.get_children():
+                report_tree.delete(item)
+            
+            # Получение данных
+            from inventory_db import get_consumption_report
+            period = period_var.get()
+            
+            # ✅ ДЛЯ ПРОИЗВОЛЬНОГО ПЕРИОДА — БЕРЕМ ДАТЫ ИЗ КАЛЕНДАРЕЙ
+            if period == 'custom' and CALENDARS_AVAILABLE:
+                try:
+                    start_dt = start_date_entry.get_date()
+                    end_dt = end_date_entry.get_date()
+                    # Добавляем время к конечной дате
+                    from datetime import datetime
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                except:
+                    # Если ошибка — используем Entry
+                    try:
+                        start_dt = datetime.strptime(start_date_entry.get(), '%d.%m.%Y')
+                        end_dt = datetime.strptime(end_date_entry.get(), '%d.%m.%Y')
+                        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                    except:
+                        messagebox.showerror("Ошибка", "Неверный формат даты!")
+                        return
+            else:
+                start_dt = None
+                end_dt = None
+            
+            report_data, period_name, total_value, start_date, end_date = get_consumption_report(
+                period, start_dt, end_dt
+            )
+            
+            # Обновление заголовка
+            period_label.config(text=f"Расход материалов {period_name}")
+            total_label.config(text=f"Общая сумма расхода: {total_value:,.2f} ₽")
+            
+            # Заполнение таблицы
+            for i, row in enumerate(report_data, 1):
+                # Чередование цветов строк
+                tag = 'even' if i % 2 == 0 else 'odd'
+                report_tree.insert('', tk.END, values=(
+                    i,
+                    row['name'],
+                    row['unit'],
+                    f"{row['quantity']:.2f}",
+                    f"{row['avg_price']:.2f}",
+                    f"{row['total_value']:.2f}",
+                    row['transaction_count']
+                ), tags=(tag,))
+            
+            # Настройка цветов
+            report_tree.tag_configure('odd', background='white')
+            report_tree.tag_configure('even', background='#f0f0f0')
+            
+            print(f"📊 Отчет обновлен: {len(report_data)} позиций, сумма: {total_value:,.2f} ₽")
+        
+        def on_period_change(*args):
+            """Показ/скрытие календарей"""
+            if period_var.get() == 'custom':
+                custom_date_frame.pack(fill=tk.X, padx=10, pady=5)
+            else:
+                custom_date_frame.pack_forget()
+            update_report()
+        
+        # Переключатели периода
+        ttk.Radiobutton(period_frame, text="📅 Неделя", variable=period_var,
+                       value='week', command=on_period_change).pack(side=tk.LEFT, padx=20)
+        ttk.Radiobutton(period_frame, text="📅 Месяц", variable=period_var,
+                       value='month', command=on_period_change).pack(side=tk.LEFT, padx=20)
+        ttk.Radiobutton(period_frame, text="📅 Год", variable=period_var,
+                       value='year', command=on_period_change).pack(side=tk.LEFT, padx=20)
+        ttk.Radiobutton(period_frame, text="📅 Произвольный", variable=period_var,
+                       value='custom', command=on_period_change).pack(side=tk.LEFT, padx=20)
+        
+        # Кнопка обновления
+        ttk.Button(period_frame, text="🔄 Обновить", command=update_report).pack(side=tk.RIGHT, padx=20)
+        
+        # Заголовок отчета
+        period_label = ttk.Label(report_frame, text="Расход материалов",
+                                font=('Arial', 11, 'bold'))
+        period_label.pack(pady=10)
+        
+        # Таблица отчета
+        report_columns = ('№', 'Материал', 'Ед.', 'Количество', 'Цена', 'Сумма', 'Транзакций')
+        report_tree = ttk.Treeview(report_frame, columns=report_columns, show='headings', height=20)
+        
+        for col in report_columns:
+            report_tree.heading(col, text=col)
+            if col == 'Материал':
+                report_tree.column(col, width=300)
+            elif col == 'Сумма':
+                report_tree.column(col, width=100)
+            else:
+                report_tree.column(col, width=80)
+        
+        report_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Итоговая сумма
+        total_frame = ttk.Frame(report_frame)
+        total_frame.pack(fill=tk.X, padx=10, pady=10)
+        total_label = ttk.Label(total_frame, text="Общая сумма расхода: 0.00 ₽",
+                               font=('Arial', 12, 'bold'), foreground='blue')
+        total_label.pack(side=tk.RIGHT)
+        
+        # Экспорт в Excel
+        def export_report():
+            """Экспорт отчета в Excel"""
+            from datetime import datetime
+            import pandas as pd
+            
+            # Получение данных
+            from inventory_db import get_consumption_report
+            report_data, period_name, total_value, start_date, end_date = get_consumption_report(period_var.get())
+            
+            if not report_data:
+                messagebox.showwarning("Внимание", "Нет данных для экспорта!")
+                return
+            
+            # Выбор файла
+            file = filedialog.asksaveasfilename(
+                title="Сохранить отчет",
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                initialfile=f"Отчет_расход_{period_name}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            )
+            
+            if not file:
+                return
+            
+            try:
+                # Создание DataFrame
+                df = pd.DataFrame(report_data)
+                df = df.rename(columns={
+                    'name': 'Материал',
+                    'unit': 'Ед.изм.',
+                    'quantity': 'Количество',
+                    'avg_price': 'Средняя цена',
+                    'total_value': 'Сумма',
+                    'transaction_count': 'Транзакций'
+                })
+                
+                # Сохранение в Excel
+                with pd.ExcelWriter(file, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Расход')
+                    # Добавление итогов
+                    workbook = writer.book
+                    worksheet = writer.sheets['Расход']
+                    worksheet.append([])
+                    worksheet.append(['ОБЩАЯ СУММА:', '', '', '', '', total_value, ''])
+                
+                messagebox.showinfo("Успех", f"Отчет сохранен:\n{file}")
+                print(f"✅ Отчет экспортирован: {file}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить отчет:\n{e}")
+                print(f"❌ Ошибка экспорта: {e}")
+        
+        # Кнопка экспорта
+        export_btn = ttk.Button(report_frame, text="📥 Экспорт в Excel", command=export_report)
+        export_btn.pack(pady=5)
+        
+        # ========== ВКЛАДКА 5: МАССОВАЯ ИНВЕНТАРИЗАЦИЯ ==========
+        bulk_inventory_frame = ttk.Frame(notebook)
+        notebook.add(bulk_inventory_frame, text="📋 Массовая инвентаризация")
+
+        # Заголовок
+        ttk.Label(bulk_inventory_frame, text="Инвентаризация всех материалов", 
+                 font=('Arial', 12, 'bold')).pack(pady=5)
+
+        # ✅ ФРЕЙМ УПРАВЛЕНИЯ
+        control_frame = ttk.Frame(bulk_inventory_frame)
+        control_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        def refresh_bulk_inventory():
+            """Обновление таблицы массовой инвентаризации"""
+            for item in bulk_tree.get_children():
+                bulk_tree.delete(item)
+            
+            from inventory_db import get_all_materials
+            materials = get_all_materials()
+            
+            for i, mat in enumerate(materials, 1):
+                bulk_tree.insert('', tk.END, values=(
+                    i,
+                    mat['name'],
+                    mat['unit'],
+                    f"{mat['quantity']:.2f}",  # Текущий остаток
+                    '',  # ✅ Новое количество (пустое для заполнения)
+                    '',  # ✅ Примечание
+                    mat['id']
+                ), tags=('normal',))
+            
+            status_label.config(text=f"Всего материалов: {len(materials)}")
+            print(f"📊 Таблица инвентаризации обновлена: {len(materials)} позиций")
+
+        def save_bulk_inventory():
+            """Сохранение результатов инвентаризации"""
+            from inventory_db import get_connection, add_transaction, update_material_quantity
+            from datetime import datetime
+            
+            # ✅ Собираем все изменённые материалы
+            changes = []
+            for item in bulk_tree.get_children():
+                values = bulk_tree.item(item)['values']
+                mat_id = values[6]  # ID материала (скрытый столбец)
+                mat_name = values[1]
+                current_qty = float(values[3]) if values[3] else 0
+                new_qty_str = str(values[4]).strip() if values[4] is not None else None  # ✅ ИСПРАВЛЕНО
+                comment = str(values[5]).strip() if values[5] is not None else ''  # ✅ ИСПРАВЛЕНО
+                
+                print(f"🔍 Проверка материала: {mat_name}")
+                print(f"   Текущее: {current_qty}")
+                print(f"   Новое (строка): '{new_qty_str}'")
+                
+                # ✅ ИСПРАВЛЕНО: Проверяем явно на None и пустую строку (0 должен проходить!)
+                if new_qty_str is not None and new_qty_str != '':
+                    try:
+                        new_qty = float(new_qty_str.replace(',', '.'))
+                        print(f"   Новое (число): {new_qty}")
+                        
+                        # ✅ Разница (положительная = прибавка, отрицательная = списание)
+                        diff = new_qty - current_qty
+                        print(f"   Разница: {diff}")
+                        
+                        # ✅ СОХРАНЯЕМ ДАЖЕ ЕСЛИ diff = 0 (но новое значение введено!)
+                        # Это нужно если пользователь явно ввёл 0
+                        changes.append({
+                            'id': mat_id,
+                            'name': mat_name,
+                            'current': current_qty,
+                            'new': new_qty,
+                            'diff': diff,
+                            'comment': comment
+                        })
+                    except ValueError as e:
+                        messagebox.showerror("Ошибка", 
+                            f"Неверное количество для '{mat_name}': {e}")
+                        return
+                else:
+                    print(f"   ⚠️ Пропущено (пустое значение)")
+            
+            if not changes:
+                messagebox.showinfo("Информация", "Нет изменений для сохранения!")
+                return
+            
+            # ✅ Подтверждение
+            confirm_msg = f"Сохранить изменения по {len(changes)} материалам?\n\n"
+            for ch in changes[:5]:  # Показываем первые 5
+                sign = '+' if ch['diff'] > 0 else ''
+                confirm_msg += f"• {ch['name']}: {ch['current']:.2f} → {ch['new']:.2f} ({sign}{ch['diff']:.2f})\n"
+            
+            if len(changes) > 5:
+                confirm_msg += f"... и ещё {len(changes) - 5} позиций\n"
+            
+            if not messagebox.askyesno("Подтверждение", confirm_msg):
+                return
+            
+            # ✅ Сохраняем изменения
+            conn = get_connection()
+            c = conn.cursor()
+            saved_count = 0
+            
+            for ch in changes:
+                try:
+                    # ✅ Обновляем количество (можно 0 и отрицательные!)
+                    update_material_quantity(ch['id'], ch['new'])
+                    
+                    # ✅ ВСЕ ТРАНЗАКЦИИ - ТИП "ИНВЕНТАРИЗАЦИЯ"
+                    add_transaction(ch['id'], 'инвентаризация', ch['diff'], 
+                                  comment=f"Инвентаризация: {ch['comment']}" if ch['comment'] else "Массовая инвентаризация")
+                    
+                    saved_count += 1
+                except Exception as e:
+                    print(f"❌ Ошибка сохранения {ch['name']}: {e}")
+            
+            conn.commit()
+            conn.close()
+            
+            messagebox.showinfo("Успех", 
+                               f"Сохранено изменений: {saved_count}\n"
+                               f"Материалы обновлены, транзакции добавлены!\n"
+                               f"Тип всех транзакций: ИНВЕНТАРИЗАЦИЯ")
+            refresh_bulk_inventory()
+            # ✅ Обновляем вкладку "Материалы" если открыта
+            load_materials()
+
+        def print_inventory_blank():
+            """✅ Печать бланка для ручной инвентаризации"""
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.units import mm
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            from datetime import datetime
+            import os
+            
+            # ✅ РЕГИСТРАЦИЯ ШРИФТА
+            try:
+                font_path = r"C:\Windows\Fonts\arial.ttf"
+                if os.path.exists(font_path):
+                    pdfmetrics.registerFont(TTFont('Arial', font_path))
+                    CYRILLIC_FONT = 'Arial'
+                else:
+                    CYRILLIC_FONT = 'Helvetica'
+            except:
+                CYRILLIC_FONT = 'Helvetica'
+            
+            # ✅ СОЗДАЁМ PDF
+            from config import PDF_OUTPUT_DIR
+            filename = f"Бланк_инвентаризации_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+            filepath = os.path.join(PDF_OUTPUT_DIR, filename)
+            
+            doc = SimpleDocTemplate(
+                filepath,
+                pagesize=A4,
+                rightMargin=10*mm,
+                leftMargin=10*mm,
+                topMargin=20*mm,
+                bottomMargin=20*mm
+            )
+            
+            # Стили
+            title_style = ParagraphStyle('Title', fontName=CYRILLIC_FONT, fontSize=16, 
+                                        alignment=TA_CENTER, spaceAfter=10)
+            header_style = ParagraphStyle('Header', fontName=CYRILLIC_FONT, fontSize=10, 
+                                         alignment=TA_LEFT, spaceAfter=5)
+            cell_style = ParagraphStyle('Cell', fontName=CYRILLIC_FONT, fontSize=9, 
+                                       alignment=TA_CENTER)
+            cell_style_left = ParagraphStyle('CellLeft', fontName=CYRILLIC_FONT, fontSize=9, 
+                                            alignment=TA_LEFT)
+            
+            elements = []
+            
+            # Заголовок
+            elements.append(Paragraph("БЛАНК ИНВЕНТАРИЗАЦИИ МАТЕРИАЛОВ", title_style))
+            elements.append(Paragraph(f"Дата заполнения: _______________", header_style))
+            elements.append(Paragraph(f"Заполнил: _______________", header_style))
+            elements.append(Spacer(1, 10))
+            
+            # ✅ ТАБЛИЦА: 5 столбцов (добавлен "На складе")
+            table_data = [[
+                Paragraph('№', cell_style),
+                Paragraph('Наименование материала', cell_style_left),
+                Paragraph('Ед.', cell_style),
+                Paragraph('На складе', cell_style),  # ✅ НОВЫЙ СТОЛБЕЦ
+                Paragraph('Фактическое количество\n(заполнить вручную)', cell_style)
+            ]]
+            
+            from inventory_db import get_all_materials
+            materials = get_all_materials()
+            
+            for i, mat in enumerate(materials, 1):
+                table_data.append([
+                    Paragraph(str(i), cell_style),
+                    Paragraph(mat['name'], cell_style_left),
+                    Paragraph(mat['unit'], cell_style),
+                    Paragraph(f"{mat['quantity']:.2f}", cell_style),  # ✅ ТЕКУЩИЙ ОСТАТОК
+                    Paragraph('', cell_style)  # ✅ ПУСТАЯ ЯЧЕЙКА для заполнения ручкой
+                ])
+            
+            # ✅ Создаём таблицу с 5 столбцами
+            inventory_table = Table(table_data, colWidths=[12*mm, 90*mm, 15*mm, 25*mm, 35*mm])
+            inventory_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, -1), CYRILLIC_FONT),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
+                ('ROWHEIGHT', (0, 1), (-1, -1), 20),  # ✅ Высота строки для заполнения ручкой
+            ]))
+            
+            elements.append(inventory_table)
+            
+            # Подвал
+            elements.append(Spacer(1, 20))
+            elements.append(Paragraph("Примечания:", header_style))
+            elements.append(Paragraph("_" * 180, cell_style_left))
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("_" * 180, cell_style_left))
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("_" * 180, cell_style_left))
+            
+            try:
+                doc.build(elements)
+                messagebox.showinfo("Успех", f"Бланк создан:\n{filepath}")
+                os.startfile(filepath)  # ✅ Открываем PDF
+                print(f"✅ Бланк инвентаризации создан: {filepath}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось создать бланк:\n{e}")
+                print(f"❌ Ошибка создания бланка: {e}")
+
+        # Кнопки
+        # ✅ ИСПРАВЛЕНО: width=18 вместо width=15 (чтобы текст не обрезался)
+        ttk.Button(control_frame, text="🔄 Обновить", command=refresh_bulk_inventory, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="💾 Сохранить", command=save_bulk_inventory, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="🖨️ Печать бланка", command=print_inventory_blank, width=20).pack(side=tk.LEFT, padx=5)  # ✅ ИСПРАВЛЕНО
+
+        # Статус
+        status_label = ttk.Label(control_frame, text="Всего материалов: 0", foreground='blue')
+        status_label.pack(side=tk.RIGHT, padx=10)
+
+        # ✅ ТАБЛИЦА МАССОВОЙ ИНВЕНТАРИЗАЦИИ
+        bulk_columns = ('№', 'Наименование', 'Ед.', 'Текущий остаток', 'Новое кол-во', 'Примечание', 'ID')
+        bulk_tree = ttk.Treeview(bulk_inventory_frame, columns=bulk_columns, show='headings', height=20)
+
+        for col in bulk_columns:
+            bulk_tree.heading(col, text=col)
+
+        bulk_tree.column('№', width=50, anchor='center')
+        bulk_tree.column('Наименование', width=300, anchor='w')
+        bulk_tree.column('Ед.', width=60, anchor='center')
+        bulk_tree.column('Текущий остаток', width=120, anchor='center')
+        bulk_tree.column('Новое кол-во', width=120, anchor='center')  # ✅ Для заполнения
+        bulk_tree.column('Примечание', width=200, anchor='w')  # ✅ Для комментариев
+        bulk_tree.column('ID', width=0, anchor='center')  # Скрытый столбец с ID
+
+        bulk_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # ✅ ИСПРАВЛЕНО: РЕДАКТИРОВАНИЕ ЯЧЕЕК
+        edit_entry = None  # ✅ Объявляем ПЕРЕД функцией on_cell_edit
+
+        def on_cell_edit(event):
+            """Обработка двойного клика для редактирования"""
+            nonlocal edit_entry  # ✅ ДОБАВЬ ЭТУ СТРОКУ!
+            
+            # Закрываем предыдущий Entry если есть
+            if edit_entry:
+                edit_entry.destroy()
+                edit_entry = None
+            
+            region = bulk_tree.identify("region", event.x, event.y)
+            column = bulk_tree.identify_column(event.x)
+            item = bulk_tree.identify_row(event.y)
+            
+            # ✅ РЕДАКТИРУЕМ ТОЛЬКО СТОЛБЦЫ 5 и 6 (Новое кол-во и Примечание)
+            if region == "cell" and column in ('#5', '#6'):
+                values = bulk_tree.item(item)['values']
+                col_idx = int(column.replace('#', '')) - 1
+                current_value = str(values[col_idx]) if col_idx < len(values) else ''
+                
+                # Создаём Entry для редактирования
+                edit_entry = ttk.Entry(bulk_tree)
+                edit_entry.insert(0, current_value)
+                edit_entry.place(x=event.x, y=event.y, width=100 if column == '#5' else 150, height=20)
+                edit_entry.focus()
+                
+                def save_edit():
+                    nonlocal edit_entry  # ✅ И ЗДЕСЬ ТОЖЕ ДОБАВЬ!
+                    new_value = edit_entry.get()
+                    values[col_idx] = new_value
+                    bulk_tree.item(item, values=values)
+                    if edit_entry:
+                        edit_entry.destroy()
+                        edit_entry = None
+                
+                edit_entry.bind('<Return>', lambda e: save_edit())
+                edit_entry.bind('<FocusOut>', lambda e: save_edit())
+
+        bulk_tree.bind('<Double-1>', on_cell_edit)
+
+        # ✅ АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ПРИ ОТКРЫТИИ
+        bulk_inventory_frame.after(300, refresh_bulk_inventory)
+        
+    def delayed_restore_sash(self):
+        """Вызывает восстановление разделителя после того, как окно точно показано"""
+        try:
+            # Пробуем несколько раз с увеличивающейся задержкой
+            for attempt in range(5):
+                self.root.after(500 * (attempt + 1), self.restore_sash_position)
+            print("⏳ Запланировано восстановление разделителя")
+        except Exception as e:
+            print(f"⚠️ Ошибка при планировании восстановления разделителя: {e}")
+
+    def restore_sash_position(self):
+        """Восстанавливает позицию разделителя (будет вызвано после показа окна)"""
+        try:
+            # Не пытаемся установить позицию, если окно скрыто
+            if str(self.root.state()) == 'withdrawn':
+                print("⏳ Окно скрыто, позиция разделителя будет восстановлена позже")
+                return
+                
+            sash_pos = self.config.get('sash_position', 400)
+            # Убеждаемся, что позиция в разумных пределах
+            if sash_pos < 100 or sash_pos > 1000:
+                sash_pos = 400
+                
+            self.main_paned.sashpos(0, sash_pos)
+            print(f"📏 Восстановлена позиция разделителя: {sash_pos}")
+        except Exception as e:
+            print(f"⚠️ Ошибка восстановления разделителя: {e}")
+
+    def show_demo_label(self):
+        config = load_config()
+        if not config.get('license_activated'):
+            first_run = config.get('first_run', '')
+            if first_run:
+                try:
+                    first_date = datetime.strptime(first_run, '%Y-%m-%d %H:%M:%S')
+                    expiry_date = first_date + timedelta(days=2)
+                    expiry_str = expiry_date.strftime('%d.%m.%Y %H:%M')
+                    
+                    for widget in self.root.winfo_children():
+                        if isinstance(widget, ttk.Frame):
+                            self.demo_label = tk.Label(
+                                widget, 
+                                text=f"⏳ Демо-версия до {expiry_str}", 
+                                fg='red', 
+                                font=('Arial', 10, 'bold')
+                            )
+                            self.demo_label.pack(side=tk.LEFT, padx=10)
+                            break
+                except Exception as e:
+                    print(f"Ошибка создания демо-метки: {e}")
+                    
+    def force_focus(self):
+        """Принудительно устанавливает фокус на поле поиска"""
+        try:
+            # Устанавливаем фокус на поле поиска
+            self.search_entry.focus_set()
+            self.search_entry.focus_force()
+            
+            # Выделяем текст в поле (если есть)
+            if self.search_entry.get():
+                self.search_entry.select_range(0, tk.END)
+            
+            # Обновляем интерфейс
+            self.root.update_idletasks()
+            print("✅ Фокус принудительно установлен на поле поиска")
+        except Exception as e:
+            print(f"⚠️ Ошибка при установке фокуса: {e}")
+
+    def delete_nonstandard_items(self):
+        """Удаляет только нестандартные изделия из базы данных"""
+        if not messagebox.askyesno("Подтверждение", 
+                                   "Удалить ВСЕ нестандартные изделия из базы?\n\n"
+                                   "Стандартные изделия с артикулами останутся нетронутыми.\n\n"
+                                   "Это действие нельзя отменить!"):
+            return
+        
+        try:
+            conn = sqlite3.connect(self.db_file)
+            c = conn.cursor()
+            
+            # Удаляем записи, где артикул = 'нестандарт' или имя начинается с '[НЕСТАНДАРТ]'
+            c.execute("DELETE FROM items WHERE articul = 'нестандарт' OR name LIKE '[НЕСТАНДАРТ]%'")
+            
+            deleted_count = c.rowcount
+            conn.commit()
+            conn.close()
+            
+            messagebox.showinfo("Успех", f"Удалено {deleted_count} нестандартных позиций!")
+            print(f"✅ Удалено нестандартных позиций: {deleted_count}")
+            
+        except Exception as e:
+            print(f"❌ Ошибка при удалении нестандартных позиций: {e}")
+            messagebox.showerror("Ошибка", f"Не удалось удалить нестандартные позиции:\n{e}")
+
+    def save_final_geometry(self):
+        """Сохраняет финальную геометрию окна после полной загрузки"""
+        try:
+            self.root.update_idletasks()
+            current_geom = self.root.geometry()
+            print(f"📐 Финальная геометрия: {current_geom}")
+            
+            import re
+            match = re.match(r'(\d+)x(\d+)([+-]\d+)([+-]\d+)', current_geom)
+            if match:
+                width, height, x, y = match.groups()
+                width_int = int(width)
+                height_int = int(height)
+                
+                # Сохраняем только если размеры разумные (больше 300 пикселей)
+                if width_int > 300 and height_int > 300:
+                    self.config['window_width'] = width_int
+                    self.config['window_height'] = height_int
+                    self.config['window_x'] = int(x)
+                    self.config['window_y'] = int(y)
+                    
+                    from config import save_config
+                    save_config(self.config)
+                    print(f"✅ Сохранена корректная геометрия: {width}x{height}+{x}+{y}")
+                else:
+                    print(f"⚠️ Пропущено сохранение маленького окна: {width}x{height}")
+        except Exception as e:
+            print(f"⚠️ Ошибка сохранения геометрии: {e}")
+
+
+    def on_order_item_select(self, event=None):
+        """Обработчик выделения позиции в заказе"""
+        selection = self.order_tree.selection()
+        if selection:
+            self.drawing_btn.config(state=tk.NORMAL)
+        else:
+            self.drawing_btn.config(state=tk.DISABLED)
+
+    def import_nonstandard(self):
+        """Импорт нестандартных изделий из Excel"""
+        order_number = self.order_number.get().strip()
+        if not order_number:
+            messagebox.showwarning("Внимание", "Сначала введите номер заказа!")
+            self.order_number.focus()
+            return
+        
+        file = filedialog.askopenfilename(
+            title="Выберите файл Excel с нестандартным изделием",
+            filetypes=[("Excel files", "*.xls *.xlsx")])
+        
+        if not file:
+            return
+        
+        from database import import_nonstandard_from_excel
+        
+        item_name = import_nonstandard_from_excel(file, order_number)
+        
+        if item_name:
+            messagebox.showinfo("Успех", f"Изделие импортировано:\n{item_name}")
+            self.search_entry.delete(0, tk.END)
+            self.search_entry.insert(0, item_name)
+            self.do_search(item_name)
+        else:
+            messagebox.showerror("Ошибка", "Не удалось импортировать изделие!")
+
+    def open_pdf(self):
+        """Открытие PDF"""
+        if not self.order_items:
+            messagebox.showwarning("Внимание", "Заказ пуст!")
+            return
+        
+        order_number = self.order_number.get().strip()
+        if not order_number:
+            messagebox.showwarning("Внимание", "Введите номер заказа!")
+            return
+        
+        from pdf_engine import create_order_pdf, print_order
+        from config import PDF_OUTPUT_DIR
+        
+        # Пересчитываем итоги
+        self.recalculate_totals()
+        
+        # ✅ БЕРЕМ ЗНАЧЕНИЕ ИЗ ЧЕКБОКСА
+        include_summary = self.summary_var.get()
+        
+        print(f"📊 Печать PDF, чекбокс: {include_summary}")
+        
+        filepath = create_order_pdf(
+            order_number,
+            self.order_items,
+            self.materials,
+            self.furniture,
+            PDF_OUTPUT_DIR,
+            include_summary
+        )
+        
+        if filepath and os.path.exists(filepath):
+            try:
+                os.startfile(filepath)
+                print(f"✅ Открыт PDF: {filepath}")
+            except Exception as e:
+                print(f"❌ Ошибка открытия PDF: {e}")
+                messagebox.showerror("Ошибка", f"Не удалось открыть PDF:\n{e}")
+        else:
+            messagebox.showerror("Ошибка", "PDF файл не создан!")
+
+            
+    def update_cache(self):
+        """Обновляет кеш нестандартных папок"""
+        if messagebox.askyesno("Подтверждение", 
+                              "Обновить кеш нестандартных папок?\n\n"
+                              "Это может занять некоторое время."):
+            result = update_nonstandard_cache_background()  # ← ИСПРАВЛЕНО
+            if result:
+                messagebox.showinfo("Успех", f"Кеш обновляется в фоне")
+            else:
+                messagebox.showerror("Ошибка", "Не удалось запустить обновление кеша")
+
+    def clear_cache(self):
+        """Очищает кеш нестандартных папок"""
+        if messagebox.askyesno("Подтверждение", 
+                              "Очистить кеш нестандартных папок?\n\n"
+                              "При следующем поиске кеш будет создан заново."):
+            if clear_nonstandard_cache():
+                messagebox.showinfo("Успех", "Кеш очищен")
+            else:
+                messagebox.showerror("Ошибка", "Не удалось очистить кеш")
+            
+    def search_excel_files(self):
+        """Поиск Excel файлов по номеру заказа и фильтрация по вводу"""
+        # Путь к папке с Excel файлами
+        base_path = r"Y:\Excel для мк"
+        if not os.path.exists(base_path):
+            messagebox.showerror("Ошибка", f"Папка не найдена:\n{base_path}")
+            return
+        
+        # Получаем все файлы из папки
+        all_files = []
+        try:
+            for filename in os.listdir(base_path):
+                if filename.lower().endswith(('.xls', '.xlsx')):
+                    all_files.append(filename)
+            all_files.sort()
+            print(f"📁 Найдено файлов: {len(all_files)}")
+        except Exception as e:
+            error_msg = f"Не удалось прочитать папку:\n{e}"
+            messagebox.showerror("Ошибка", error_msg)
+            return
+        
+        # Создаем окно поиска
+        search_win = tk.Toplevel(self.root)
+        search_win.title("Поиск Excel файлов")
+        search_win.geometry("800x600")
+        search_win.transient(self.root)
+        search_win.grab_set()
+        
+        # Центрируем окно
+        search_win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (800 // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (600 // 2)
+        search_win.geometry(f"+{x}+{y}")
+        
+        # Переменные для хранения выбранного файла
+        selected_file = [None]
+        
+        # ========== СОЗДАЕМ ИНТЕРФЕЙС ==========
+        # Верхняя панель с информацией
+        top_frame = ttk.Frame(search_win)
+        top_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(top_frame, text=f"Всего файлов: {len(all_files)}",
+                 font=('Arial', 10)).pack(side=tk.LEFT)
+        
+        # Поле поиска
+        search_frame = ttk.Frame(search_win)
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(search_frame, text="🔍 Поиск:").pack(side=tk.LEFT, padx=5)
+        search_entry = ttk.Entry(search_frame, width=50)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        search_entry.focus()
+        
+        # Основная область с результатами
+        main_frame = ttk.Frame(search_win)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Список найденных файлов
+        list_frame = ttk.LabelFrame(main_frame, text="Найденные файлы", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Добавляем скроллбар
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        files_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=('Consolas', 9))
+        files_listbox.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        scrollbar.config(command=files_listbox.yview)
+        
+        # Изначально показываем все файлы
+        for filename in all_files:
+            files_listbox.insert(tk.END, filename)
+        
+        # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+        def filter_files(*args):
+            """Фильтрует файлы по введенному тексту"""
+            query = search_entry.get().strip().lower()
+            files_listbox.delete(0, tk.END)
+            
+            if not query:
+                for filename in all_files:
+                    files_listbox.insert(tk.END, filename)
+            else:
+                filtered = []
+                for filename in all_files:
+                    if query in filename.lower():
+                        filtered.append(filename)
+                
+                if filtered:
+                    for filename in sorted(filtered):
+                        files_listbox.insert(tk.END, filename)
+                else:
+                    files_listbox.insert(tk.END, "Файлы не найдены")
+        
+        def on_file_select(event):
+            """Обработчик выбора файла"""
+            selection = files_listbox.curselection()
+            if not selection:
+                return
+            
+            selected = files_listbox.get(selection[0])
+            if selected == "Файлы не найдены":
+                return
+            
+            selected_file[0] = selected
+            print(f"✅ Выбран файл: {selected_file[0]}")
+        
+        def import_selected_file():
+            """Импортирует выбранный файл с обработкой частичного импорта"""
+            if not selected_file[0]:
+                messagebox.showwarning("Внимание", "Выберите файл для импорта!")
+                return
+            
+            order_number = self.order_number.get().strip()
+            file_path = os.path.join(base_path, selected_file[0])
+            print(f"📥 Импорт файла: {file_path} с номером заказа: '{order_number}'")
+            
+            from database import import_nonstandard_from_excel
+            result = import_nonstandard_from_excel(file_path, order_number)
+            
+            # ✅ ОБРАБАТЫВАЕМ РЕЗУЛЬТАТ (теперь это кортеж)
+            if result[0]:  # result[0] = успешно импортировано (True/False или имя первого изделия)
+                imported_count = result[1]  # количество успешно импортированных
+                total_count = result[2]  # всего изделий в файле
+                failed_items = result[3]  # список неудачных
+                
+                success_msg = f"Импорт завершён!\n\n"
+                success_msg += f"✅ Успешно импортировано: {imported_count} из {total_count}\n"
+                
+                if failed_items:
+                    success_msg += f"\n❌ Не импортировано: {len(failed_items)}\n"
+                    for item in failed_items[:5]:  # Показываем первые 5
+                        success_msg += f"   • {item}\n"
+                    if len(failed_items) > 5:
+                        success_msg += f"   ... и ещё {len(failed_items) - 5}\n"
+                    success_msg += f"\nЭти изделия можно добавить вручную через поиск."
+                
+                messagebox.showinfo("Успех", success_msg, parent=search_win)
+                
+                # ✅ ЗАГРУЖАЕМ ПЕРВОЕ УСПЕШНО ИМПОРТИРОВАННОЕ ИЗДЕЛИЕ
+                search_win.destroy()
+                self.search_entry.delete(0, tk.END)
+                self.search_entry.insert(0, result[0] if isinstance(result[0], str) else '')
+                self.do_search(result[0] if isinstance(result[0], str) else '')
+            else:
+                messagebox.showerror("Ошибка", "Не удалось импортировать изделие!", parent=search_win)
+        
+        # ========== КНОПКИ ==========
+        btn_frame = ttk.Frame(search_win)
+        btn_frame.pack(pady=10)
+        
+        ttk.Button(btn_frame, text="📥 Импорт", command=import_selected_file, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="❌ Закрыть", command=search_win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+        
+        # ========== ПРИВЯЗЫВАЕМ СОБЫТИЯ ==========
+        search_entry.bind('<KeyRelease>', filter_files)
+        files_listbox.bind('<<ListboxSelect>>', on_file_select)
+        files_listbox.bind('<Double-1>', lambda e: import_selected_file())
+
+    def on_search_key_release(self, event):
+        query = self.search_entry.get().strip()
+        if len(query) >= 2:
+            self.do_search(query)
+
+    def on_search_enter(self, event):
+        query = self.search_entry.get().strip()
+        if query:
+            self.do_search(query)
+            if self.listbox.size() > 0:
+                self.listbox.selection_set(0)
+                self.on_select()
+
+    def clear_search(self):
+        self.search_entry.delete(0, tk.END)
+        self.listbox.delete(0, tk.END)
+        self.search_status_var.set("Введите текст для поиска")
+
+    def do_search(self, query):
+        print(f"🔍 do_search начат с запросом: '{query}'")
+        
+        self.listbox.delete(0, tk.END)
+        
+        if len(query) < 2:
+            print("❌ Запрос слишком короткий")
+            self.search_status_var.set("Введите минимум 2 символа")
+            return
+        
+        self.search_status_var.set("Поиск...")
+        self.root.update()
+        
+        try:
+            conn = sqlite3.connect(self.db_file)
+            c = conn.cursor()
+            
+            c.execute("SELECT name, articul FROM items")
+            all_items = c.fetchall()
+            conn.close()
+            
+            print(f"📊 Загружено записей: {len(all_items)}")
+            
+            query_lower = query.lower()
+            results = []
+            seen = set()
+            
+            for name, articul in all_items:
+                name_lower = name.lower() if name else ''
+                articul_lower = articul.lower() if articul else ''
+                
+                if query_lower in name_lower or query_lower in articul_lower:
+                    key = (name, articul)
+                    if key not in seen:
+                        seen.add(key)
+                        results.append((name, articul))
+                
+                if len(results) >= 50:
+                    break
+            
+            print(f"📊 Найдено результатов: {len(results)}")
+            self.search_status_var.set(f"Найдено: {len(results)}")
+            
+            if results:
+                for name, articul in results:
+                    # Для нестандартных изделий показываем только базовое имя
+                    if name.startswith('[НЕСТАНДАРТ]'):
+                        # Убираем "(заказ ...)" если есть
+                        if '(заказ' in name:
+                            base_name = name.split('(заказ')[0].strip()
+                        else:
+                            base_name = name
+                        display_text = f"{base_name} | {articul}"
+                    else:
+                        display_text = f"{name} | {articul}"
+                    
+                    self.listbox.insert(tk.END, display_text)
+                
+                print(f"✅ Первые результаты:")
+                for i, (name, articul) in enumerate(results[:5]):
+                    print(f"   {i+1}. {name} | {articul}")
+            else:
+                self.listbox.insert(tk.END, "Ничего не найдено")
+                print(f"❌ Ничего не найдено для '{query}'")
+                
+        except Exception as e:
+            self.search_status_var.set(f"Ошибка: {e}")
+            print(f"❌ ОШИБКА ПОИСКА: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def on_select(self, event=None):
+        try:
+            selection = self.listbox.curselection()
+            if not selection:
+                print("❌ Нет выбранного элемента")
+                return
+            
+            selected = self.listbox.get(selection[0])
+            print(f"📝 Выбрано в списке: '{selected}'")
+            
+            if selected == "Ничего не найдено" or "Ошибка" in selected:
+                print("⚠️ Выбрано служебное сообщение")
+                return
+            
+            if " | " in selected:
+                name, articul = selected.split(" | ", 1)
+                print(f"✅ Разобрано: name='{name}', articul='{articul}'")
+                
+                self.name_entry.config(state='normal')
+                self.articul_entry.config(state='normal')
+                
+                self.name_entry.delete(0, tk.END)
+                self.articul_entry.delete(0, tk.END)
+                
+                self.name_entry.insert(0, name)
+                self.articul_entry.insert(0, articul)
+                
+                self.name_entry.config(state='readonly')
+                self.articul_entry.config(state='readonly')
+                
+                self.name_var.set(name)
+                self.articul_var.set(articul)
+                
+                self.root.update_idletasks()
+                
+                print(f"   После установки - name_entry.get(): '{self.name_entry.get()}'")
+                print(f"   После установки - articul_entry.get(): '{self.articul_entry.get()}'")
+                
+                print("➡️ Переход к полю ПОЗИЦИЯ")
+                self.item_number_entry.focus()
+                self.item_number_var.set("")
+                
+                self.search_status_var.set(f"Выбрано: {name}")
+                
+                # === АКТИВИРУЕМ КНОПКУ ЧЕРТЕЖА ===
+                if hasattr(self, 'drawing_button') and self.drawing_button:
+                    self.drawing_button.config(state=tk.NORMAL)
+                    print("✅ Кнопка чертежа активирована")
+                # ================================
+            else:
+                print(f"❌ Неверный формат строки: '{selected}'")
+                
+        except Exception as e:
+            print(f"❌ Ошибка в on_select: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def add_to_order(self):
+        """Добавление выбранного изделия в заказ"""
+        try:
+            name = self.name_var.get().strip()
+            articul = self.articul_var.get().strip()
+            qty_str = self.qty_entry.get().strip()
+            color = self.color_entry.get().strip()
+            item_number = self.item_number_entry.get().strip()
+            
+            print("=" * 50)
+            print("🔍 ОТЛАДКА ADD_TO_ORDER:")
+            print(f"   name_var.get(): '{name}'")
+            print(f"   articul_var.get(): '{articul}'")
+            print(f"   qty_entry.get(): '{qty_str}'")
+            print(f"   color_entry.get(): '{color}'")
+            print(f"   item_number_entry.get(): '{item_number}'")
+            print("=" * 50)
+            
+            # Проверка: выбрано ли изделие
+            if not name or not articul:
+                messagebox.showwarning("Внимание", "Выберите изделие из списка!")
+                return
+            
+            # Проверка: введено ли количество
+            if not qty_str:
+                messagebox.showerror("Ошибка", "Введите количество!")
+                self.qty_entry.focus()
+                return
+            
+            # Проверка: число ли количество
+            try:
+                qty = int(qty_str)
+            except ValueError:
+                messagebox.showerror("Ошибка", f"Количество должно быть числом, а не '{qty_str}'!")
+                self.qty_entry.focus()
+                self.qty_entry.select_range(0, tk.END)
+                return
+            
+            # Проверка: больше ли 0
+            if qty <= 0:
+                messagebox.showerror("Ошибка", f"Количество должно быть больше 0!")
+                self.qty_entry.focus()
+                self.qty_entry.select_range(0, tk.END)
+                return
+            
+            # Проверка на уникальность номера позиции
+            if item_number:
+                for existing_item in self.order_items:
+                    if existing_item.get('item_number') == item_number:
+                        messagebox.showwarning(
+                            "Внимание",
+                            f"Позиция '{item_number}' уже существует!\n\n"
+                            f"Текущая позиция:\n"
+                            f"Наименование: {existing_item['name']}\n"
+                            f"Артикул: {existing_item['articul']}\n"
+                            f"Количество: {existing_item['qty']}\n"
+                            f"Цвет: {existing_item.get('color', '')}\n\n"
+                            f"Измените номер позиции или удалите существующую."
+                        )
+                        self.item_number_entry.focus()
+                        self.item_number_entry.select_range(0, tk.END)
+                        return
+            
+            # Добавляем позицию в заказ
+            self.order_items.append({
+                'name': name,
+                'articul': articul,
+                'qty': qty,
+                'color': color,
+                'item_number': item_number
+            })
+            
+            print(f"✅ Добавлено в заказ: {name} x{qty}, позиция: {item_number}")
+            
+            # ПЕРЕСЧИТЫВАЕМ итоги после добавления
+            self.recalculate_totals()
+            
+            # Обновляем отображение
+            self.update_order_display()
+            
+            # Очищаем поля ввода
+            self.name_entry.config(state='normal')
+            self.articul_entry.config(state='normal')
+            self.name_entry.delete(0, tk.END)
+            self.articul_entry.delete(0, tk.END)
+            self.qty_entry.delete(0, tk.END)
+            self.color_entry.delete(0, tk.END)
+            self.item_number_entry.delete(0, tk.END)
+            self.name_entry.config(state='readonly')
+            self.articul_entry.config(state='readonly')
+            
+            self.name_var.set("")
+            self.articul_var.set("")
+            self.qty_var.set("")
+            self.color_var.set("")
+            self.item_number_var.set("")
+            
+            # Возвращаем фокус на поиск
+            self.search_entry.focus()
+            self.search_entry.delete(0, tk.END)
+            
+            # === ДЕАКТИВИРУЕМ КНОПКУ ЧЕРТЕЖА ===
+            if hasattr(self, 'drawing_button') and self.drawing_button:
+                self.drawing_button.config(state=tk.DISABLED)
+            # ================================
+            
+            print("✅ Готово")
+            
+        except Exception as e:
+            print(f"❌ Ошибка в add_to_order: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Ошибка", f"Произошла ошибка:\n{e}")
+
+    def update_order_display(self):
+        """Обновление таблицы заказов с поддержкой редактирования"""
+        for item in self.order_tree.get_children():
+            self.order_tree.delete(item)
+        
+        sorted_items = sorted(self.order_items,
+                             key=lambda x: int(x.get('item_number', 0)) if x.get('item_number', '').isdigit() else float('inf'))
+        
+        for i, item in enumerate(sorted_items, 1):
+            item_id = self.order_tree.insert('', tk.END, values=(
+                i,
+                item.get('item_number', ''),
+                item['name'],
+                item['articul'],
+                item['qty'],
+                item.get('color', '')
+            ), tags=(item.get('item_number', ''),))
+            
+            # ✅ СОХРАНЯЕМ ID элемента в самом элементе
+            self.order_tree.item(item_id, tags=(str(i),))
+        
+        # ✅ ПРИВЯЗЫВАЕМ ОБРАБОТЧИК ДВОЙНОГО КЛИКА ДЛЯ РЕДАКТИРОВАНИЯ
+        self.order_tree.bind('<Double-1>', self.on_order_item_double_click)
+
+    def on_order_item_double_click(self, event):
+        """Редактирование позиции в заказе по двойному клику"""
+        selection = self.order_tree.selection()
+        if not selection:
+            return
+        
+        item_values = self.order_tree.item(selection[0])['values']
+        if not item_values:
+            return
+        
+        # item_values: (№, Пункт, Наименование, Артикул, Кол-во, Цвет)
+        item_index = int(item_values[0]) - 1  # Индекс в self.order_items
+        current_item = self.order_items[item_index]
+        
+        # ✅ СОЗДАЁМ ДИАЛОГ РЕДАКТИРОВАНИЯ
+        edit_dialog = tk.Toplevel(self.root)
+        edit_dialog.title(f"Редактирование позиции №{item_values[1]}")
+        edit_dialog.geometry("450x350")
+        edit_dialog.transient(self.root)
+        edit_dialog.grab_set()
+        
+        # Центрируем диалог
+        edit_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (450 // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (350 // 2)
+        edit_dialog.geometry(f"450x350+{x}+{y}")
+        
+        ttk.Label(edit_dialog, text=f"Изделие: {current_item['name']}", 
+                 font=('Arial', 11, 'bold')).pack(pady=10)
+        
+        # ✅ ПОЛЕ: Номер пункта
+        ttk.Label(edit_dialog, text="Позиция в заказе:").pack(anchor=tk.W, padx=20, pady=(10, 0))
+        # ✅ ИСПРАВЛЕНО: добавлен master=edit_dialog
+        item_number_var = tk.StringVar(master=edit_dialog, value=current_item.get('item_number', ''))
+        item_number_entry = ttk.Entry(edit_dialog, textvariable=item_number_var, width=40)
+        item_number_entry.pack(padx=20, pady=5)
+        
+        # ✅ ПОЛЕ: Количество
+        ttk.Label(edit_dialog, text="Количество:").pack(anchor=tk.W, padx=20, pady=(10, 0))
+        # ✅ ИСПРАВЛЕНО: добавлен master=edit_dialog
+        qty_var = tk.StringVar(master=edit_dialog, value=str(current_item['qty']))
+        qty_entry = ttk.Entry(edit_dialog, textvariable=qty_var, width=40)
+        qty_entry.pack(padx=20, pady=5)
+        
+        # ✅ ПОЛЕ: Цвет
+        ttk.Label(edit_dialog, text="Цвет:").pack(anchor=tk.W, padx=20, pady=(10, 0))
+        # ✅ ИСПРАВЛЕНО: добавлен master=edit_dialog
+        color_var = tk.StringVar(master=edit_dialog, value=current_item.get('color', ''))
+        color_entry = ttk.Entry(edit_dialog, textvariable=color_var, width=40)
+        color_entry.pack(padx=20, pady=5)
+        
+        # ✅ ПРОВЕРКА НА ДУБЛИКАТЫ
+        def validate_item_number():
+            new_number = item_number_var.get().strip()
+            if not new_number:
+                return "Введите номер позиции!"
+            
+            # Проверяем на дубликаты (исключая текущую позицию)
+            for i, item in enumerate(self.order_items):
+                if i != item_index and item.get('item_number') == new_number:
+                    return f"Позиция '{new_number}' уже существует!"
+            
+            return None
+        
+        # ✅ СОХРАНЕНИЕ ИЗМЕНЕНИЙ
+        def save_changes():
+            # Проверка номера позиции
+            error = validate_item_number()
+            if error:
+                messagebox.showerror("Ошибка", error, parent=edit_dialog)
+                return
+            
+            # Проверка количества
+            try:
+                new_qty = int(qty_var.get().strip())
+                if new_qty <= 0:
+                    raise ValueError("Количество должно быть больше 0")
+            except ValueError as e:
+                messagebox.showerror("Ошибка", f"Неверное количество: {e}", parent=edit_dialog)
+                return
+            
+            # ✅ СОХРАНЯЕМ ИЗМЕНЕНИЯ
+            old_item_number = current_item.get('item_number', '')
+            new_item_number = item_number_var.get().strip()
+            old_qty = current_item['qty']
+            new_qty = int(qty_var.get().strip())
+            new_color = color_var.get().strip()
+            
+            current_item['item_number'] = new_item_number
+            current_item['qty'] = new_qty
+            current_item['color'] = new_color
+            
+            # ✅ ПЕРЕСЧИТЫВАЕМ МАТЕРИАЛЫ
+            self.recalculate_totals()
+            self.update_order_display()
+            
+            # ✅ ЕСЛИ ЗАКАЗ БЫЛ ПРОВЕДЁН - ПРЕДУПРЕЖДАЕМ О НЕОБХОДИМОСТИ ПЕРЕПРОВЕДЕНИЯ
+            if hasattr(self, 'current_order_info') and self.current_order_info.get('is_deducted'):
+                messagebox.showwarning("Внимание",
+                                      "⚠️ ЗАКАЗ БЫЛ ИЗМЕНЕН!\n\n"
+                                      "После изменения количества необходимо:\n"
+                                      "1. Сохранить заказ\n"
+                                      "2. Нажать 'Сохранить и провести' для пересчёта материалов\n\n"
+                                      "Старые материалы будут возвращены на склад,\n"
+                                      "новые будут списаны согласно изменениям.",
+                                      parent=edit_dialog)
+            
+            messagebox.showinfo("Успех", "Позиция обновлена!", parent=edit_dialog)
+            edit_dialog.destroy()
+        
+        # Кнопки
+        btn_frame = ttk.Frame(edit_dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="💾 Сохранить", command=save_changes, width=15).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="❌ Отмена", command=edit_dialog.destroy, width=15).pack(side=tk.LEFT, padx=10)
+        
+        item_number_entry.focus()
+
+    def delete_item(self):
+        """Удаление позиции из заказа по двойному клику"""
+        selection = self.order_tree.selection()
+        if not selection:
+            messagebox.showwarning("Внимание", "Выберите позицию для удаления!")
+            return
+        
+        item_values = self.order_tree.item(selection[0])['values']
+        if not item_values:
+            return
+        
+        item_number = str(item_values[1])
+        
+        # ✅ ПРЕДУПРЕЖДЕНИЕ ЕСЛИ ЗАКАЗ БЫЛ ИЗМЕНЕН
+        if hasattr(self, 'current_order_info') and self.current_order_info.get('is_deducted'):
+            if not messagebox.askyesno("Предупреждение",
+                                      "⚠️ ЗАКАЗ БЫЛ ИЗМЕНЕН!\n\n"
+                                      "После удаления позиции необходимо перепровести заказ\n"
+                                      "для корректного пересчёта материалов.\n\n"
+                                      "Продолжить?"):
+                return
+        
+        if not messagebox.askyesno("Подтверждение",
+                                  f"Удалить позицию №{item_values[0]}?\n"
+                                  f"{item_values[2]} | {item_values[3]}"):
+            return
+        
+        for i, item in enumerate(self.order_items):
+            if str(item.get('item_number', '')) == item_number:
+                deleted_item = self.order_items.pop(i)
+                print(f"✅ Удалена позиция: {deleted_item['name']}")
+                break
+        
+        self.drawing_btn.config(state=tk.DISABLED)
+        self.recalculate_totals()
+        self.update_order_display()
+        
+        order_number = self.order_number.get().strip()
+        if order_number:
+            save_order(order_number, self.order_items)
+
+    def edit_order_item(self):
+        """Редактирование позиции в заказе (через кнопку)"""
+        selection = self.order_tree.selection()
+        if not selection:
+            messagebox.showwarning("Внимание", "Выберите позицию для редактирования!")
+            return
+        
+        item_values = self.order_tree.item(selection[0])['values']
+        if not item_values:
+            return
+        
+        # item_values: (№, Пункт, Наименование, Артикул, Кол-во, Цвет)
+        selected_item_number = str(item_values[1])  # ✅ БЕРЁМ ПО НОМЕРУ ПУНКТА
+        
+        # ✅ НАХОДИМ ПОЗИЦИЮ В self.order_items ПО item_number
+        current_item = None
+        item_index = -1
+        for i, item in enumerate(self.order_items):
+            if str(item.get('item_number', '')) == selected_item_number:
+                current_item = item
+                item_index = i
+                break
+        
+        if not current_item:
+            messagebox.showerror("Ошибка", "Не удалось найти позицию в заказе!")
+            return
+        
+        # ✅ СОЗДАЁМ ДИАЛОГ РЕДАКТИРОВАНИЯ
+        edit_dialog = tk.Toplevel(self.root)
+        edit_dialog.title(f"Редактирование позиции №{selected_item_number}")
+        edit_dialog.geometry("500x400")  # ✅ УВЕЛИЧИЛИ ШИРИНУ
+        edit_dialog.transient(self.root)
+        edit_dialog.grab_set()
+        
+        # Центрируем диалог
+        edit_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (500 // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (400 // 2)
+        edit_dialog.geometry(f"500x400+{x}+{y}")
+        
+        # ✅ ЗАГОЛОВОК С ПЕРЕНОСОМ НА 2 СТРОКИ
+        title_frame = ttk.Frame(edit_dialog)
+        title_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(title_frame, text=f"Изделие:", 
+                 font=('Arial', 11, 'bold')).pack()
+        
+        # ✅ НАИМЕНОВАНИЕ НА 2 СТРОКИ (wraplength=450)
+        ttk.Label(title_frame, text=current_item['name'], 
+                 font=('Arial', 10), wraplength=450,  # ✅ ПЕРЕНОС СТРОКИ
+                 justify=tk.CENTER).pack(pady=5)
+        
+        # ✅ ПОЛЕ: Номер пункта
+        ttk.Label(edit_dialog, text="Позиция в заказе:").pack(anchor=tk.W, padx=20, pady=(10, 0))
+        item_number_var = tk.StringVar(master=edit_dialog, value=current_item.get('item_number', ''))
+        item_number_entry = ttk.Entry(edit_dialog, textvariable=item_number_var, width=50)
+        item_number_entry.pack(padx=20, pady=5)
+        
+        # ✅ ПОЛЕ: Количество
+        ttk.Label(edit_dialog, text="Количество:").pack(anchor=tk.W, padx=20, pady=(10, 0))
+        qty_var = tk.StringVar(master=edit_dialog, value=str(current_item['qty']))
+        qty_entry = ttk.Entry(edit_dialog, textvariable=qty_var, width=50)
+        qty_entry.pack(padx=20, pady=5)
+        
+        # ✅ ПОЛЕ: Цвет
+        ttk.Label(edit_dialog, text="Цвет:").pack(anchor=tk.W, padx=20, pady=(10, 0))
+        color_var = tk.StringVar(master=edit_dialog, value=current_item.get('color', ''))
+        color_entry = ttk.Entry(edit_dialog, textvariable=color_var, width=50)
+        color_entry.pack(padx=20, pady=5)
+        
+        # ✅ ПРОВЕРКА НА ДУБЛИКАТЫ
+        def validate_item_number():
+            new_number = item_number_var.get().strip()
+            if not new_number:
+                return "Введите номер позиции!"
+            
+            # Проверяем на дубликаты (исключая текущую позицию)
+            for i, item in enumerate(self.order_items):
+                if i != item_index and item.get('item_number') == new_number:
+                    return f"Позиция '{new_number}' уже существует!"
+            
+            return None
+        
+        # ✅ СОХРАНЕНИЕ ИЗМЕНЕНИЙ
+        def save_changes():
+            # Проверка номера позиции
+            error = validate_item_number()
+            if error:
+                messagebox.showerror("Ошибка", error, parent=edit_dialog)
+                return
+            
+            # Проверка количества
+            try:
+                new_qty = int(qty_var.get().strip())
+                if new_qty <= 0:
+                    raise ValueError("Количество должно быть больше 0")
+            except ValueError as e:
+                messagebox.showerror("Ошибка", f"Неверное количество: {e}", parent=edit_dialog)
+                return
+            
+            # ✅ СОХРАНЯЕМ ИЗМЕНЕНИЯ
+            old_item_number = current_item.get('item_number', '')
+            new_item_number = item_number_var.get().strip()
+            old_qty = current_item['qty']
+            new_qty = int(qty_var.get().strip())
+            new_color = color_var.get().strip()
+            
+            current_item['item_number'] = new_item_number
+            current_item['qty'] = new_qty
+            current_item['color'] = new_color
+            
+            # ✅ ПЕРЕСЧИТЫВАЕМ МАТЕРИАЛЫ
+            self.recalculate_totals()
+            self.update_order_display()
+            
+            # ✅ ЕСЛИ ЗАКАЗ БЫЛ ПРОВЕДЁН - ПРЕДУПРЕЖДАЕМ
+            if hasattr(self, 'current_order_info') and self.current_order_info.get('is_deducted'):
+                messagebox.showwarning("Внимание",
+                                      "⚠️ ЗАКАЗ БЫЛ ИЗМЕНЕН!\n\n"
+                                      "После изменения количества необходимо:\n"
+                                      "1. Сохранить заказ\n"
+                                      "2. Нажать 'Сохранить и провести' для пересчёта материалов\n\n"
+                                      "Старые материалы будут возвращены на склад,\n"
+                                      "новые будут списаны согласно изменениям.",
+                                      parent=edit_dialog)
+            
+            messagebox.showinfo("Успех", "Позиция обновлена!", parent=edit_dialog)
+            edit_dialog.destroy()
+        
+        # Кнопки
+        btn_frame = ttk.Frame(edit_dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="💾 Сохранить", command=save_changes, width=15).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="❌ Отмена", command=edit_dialog.destroy, width=15).pack(side=tk.LEFT, padx=10)
+        
+        item_number_entry.focus()
+
+    def recalculate_totals(self):
+        """Пересчитывает общие материалы и фурнитуру на основе текущих позиций"""
+        print("🔄 ПЕРЕСЧЕТ ИТОГОВ...")
+        old_materials = self.materials.copy() if self.materials else {}
+        old_furniture = self.furniture.copy() if self.furniture else {}
+        self.materials = {}
+        self.furniture = {}
+        
+        if not self.order_items:
+            print("⚠️ Нет позиций в заказе")
+            return
+        
+        print(f"📊 Обрабатывается позиций: {len(self.order_items)}")
+        
+        for idx, item in enumerate(self.order_items, 1):
+            print(f"   [{idx}] Обработка: {item['name']} (арт. {item['articul']}) x{item['qty']}")
+            
+            from database import get_materials_for_item
+            materials, furniture = get_materials_for_item(item['name'], item['articul'])
+            
+            print(f"       Получено материалов: {len(materials)}, фурнитуры: {len(furniture)}")
+            
+            for mat, mat_qty in materials:
+                if mat and mat_qty:
+                    total_qty = mat_qty * item['qty']
+                    if mat in self.materials:
+                        self.materials[mat] += total_qty
+                    else:
+                        self.materials[mat] = total_qty
+                    print(f"          + Материал: {mat} x{total_qty} (из {mat_qty} на изд.)")
+            
+            for furn, furn_qty in furniture:
+                if furn and furn_qty:
+                    total_qty = furn_qty * item['qty']
+                    if furn in self.furniture:
+                        self.furniture[furn] += total_qty
+                    else:
+                        self.furniture[furn] = total_qty
+                    print(f"          + Фурнитура: {furn} x{total_qty} (из {furn_qty} на изд.)")
+        
+        print("📊 ИТОГОВЫЕ ЗНАЧЕНИЯ:")
+        
+        if self.materials:
+            print("   📦 МАТЕРИАЛЫ:")
+            for mat, qty in self.materials.items():
+                print(f"      - {mat}: {qty}")
+        else:
+            print("   📦 Материалы: отсутствуют")
+        
+        if self.furniture:
+            print("   🔧 ФУРНИТУРА:")
+            for furn, qty in self.furniture.items():
+                print(f"      - {furn}: {qty}")
+        else:
+            print("   🔧 Фурнитура: отсутствует")
+        
+        if old_materials != self.materials or old_furniture != self.furniture:
+            print("✅ Итоги обновлены")
+        else:
+            print("⚠️ Итоги не изменились")
+        
+        print("=" * 60)
+
+    def clear_order(self):
+        """Очищает текущие позиции в заказе, номер заказа и результаты поиска"""
+        if not self.order_items and not self.order_number.get().strip():
+            messagebox.showinfo("Информация", "Заказ и так пуст!")
+            return
+        
+        if messagebox.askyesno("Подтверждение",
+            "Очистить текущие позиции в заказе?\n"
+            "Сохраненный заказ в базе не будет затронут"):
+            
+            # ✅ Очищаем заказ
+            self.order_items = []
+            self.materials = {}
+            self.furniture = {}
+            self.update_order_display()
+            
+            # === Очищаем номер заказа ===
+            self.order_number.delete(0, tk.END)
+            
+            # === Очищаем результаты поиска ===
+            self.search_entry.delete(0, tk.END)
+            self.listbox.delete(0, tk.END)
+            self.search_status_var.set("Введите текст для поиска")
+            
+            # === Очищаем поля выбранного изделия ===
+            self.name_var.set("")
+            self.articul_var.set("")
+            self.item_number_var.set("")
+            self.qty_var.set("")
+            self.color_var.set("")
+            
+            # ✅ ВАЖНО: Очищаем информацию о текущем заказе!
+            if hasattr(self, 'current_order_info'):
+                self.current_order_info = None
+            
+            # Возвращаем фокус на поле номера заказа
+            self.order_number.focus()
+            
+            print(f"✅ Заказ очищен полностью")
+
+    def print_order(self):
+        """Печать заказа"""
+        if not self.order_items:
+            messagebox.showwarning("Внимание", "Заказ пуст!")
+            return
+
+        order_number = self.order_number.get().strip()
+        if not order_number:
+            messagebox.showwarning("Внимание", "Введите номер заказа!")
+            return
+
+        from pdf_engine import create_order_pdf, print_order
+        from config import PDF_OUTPUT_DIR
+
+        # Пересчитываем итоги
+        self.recalculate_totals()
+
+        # ✅ ИСПРАВЛЕНО: Правильно получаем значение из переменной чекбокса
+        include_summary = self.summary_var.get()
+        
+        print(f"📊 Печать PDF, чекбокс 'Общий отчет': {include_summary}")
+
+        filepath = create_order_pdf(
+            order_number,
+            self.order_items,
+            self.materials,
+            self.furniture,
+            PDF_OUTPUT_DIR,
+            include_summary  # <-- Передаем актуальное значение
+        )     
+        if filepath:
+            print(f"✅ PDF создан: {filepath}")
+            if print_order(filepath):
+                messagebox.showinfo("Успех", "Заказ отправлен на печать", parent=self.root)
+            else:
+                messagebox.showerror("Ошибка", "Не удалось отправить на печать", parent=self.root)
+        else:
+            print("❌ Ошибка создания PDF")
+            messagebox.showerror("Ошибка", "Не удалось создать PDF файл!", parent=self.root)
+
+    def show_backup_orders(parent):
+        """✅ Показывает все заказы с бэкапами"""
+        from order_backup import get_all_backup_orders, restore_order_from_backup
+        
+        backup_orders = get_all_backup_orders()
+        
+        if not backup_orders:
+            messagebox.showinfo("Информация", "Бэкапы заказов не найдены!", parent=parent)
+            return
+        
+        backup_win = tk.Toplevel(parent)
+        backup_win.title("📋 Бэкапы заказов")
+        backup_win.geometry("800x500")
+        backup_win.transient(parent)
+        backup_win.grab_set()
+        
+        ttk.Label(backup_win, text="Бэкапы заказов", font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # Таблица бэкапов
+        columns = ('Заказ', 'Год', 'Бэкапов', 'Последний', 'Позиций')
+        backup_tree = ttk.Treeview(backup_win, columns=columns, show='headings', height=15)
+        
+        for col in columns:
+            backup_tree.heading(col, text=col)
+            backup_tree.column(col, width=120)
+        
+        backup_tree.column('Заказ', width=150)
+        backup_tree.column('Последний', width=180)
+        
+        backup_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Заполняем
+        for order in backup_orders:
+            backup_tree.insert('', tk.END, values=(
+                order['order_number'],
+                order['order_year'],
+                order['backup_count'],
+                order['last_backup'],
+                order['items_count']
+            ), tags=(order['order_number'], order['order_year']))
+        
+        def restore_backup():
+            selection = backup_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для восстановления!", parent=backup_win)
+                return
+            
+            order_number = backup_tree.item(selection[0])['tags'][0]
+            order_year = int(backup_tree.item(selection[0])['tags'][1])
+            
+            from order_backup import get_order_backups
+            backups = get_order_backups(order_number, order_year)
+            
+            if backups:
+                messagebox.showinfo("Информация", 
+                                   f"Для восстановления загрузите заказ №{order_number}\n"
+                                   f"из окна 'Сохраненные заказы'", 
+                                   parent=backup_win)
+            else:
+                messagebox.showerror("Ошибка", "Бэкапы не найдены!", parent=backup_win)
+        
+        btn_frame = ttk.Frame(backup_win)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="🔄 Восстановить", command=restore_backup, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="❌ Закрыть", command=backup_win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+
+    def open_admin(self):
+        password = simpledialog.askstring("Администрирование", "Введите пароль:", show='*')
+        if password == "2001884":
+            admin_win = tk.Toplevel(self.root)
+            admin_win.title("Администрирование")
+            admin_win.geometry("790x650")  # ✅ Увеличил размер
+            admin_win.resizable(True, True)  # ✅ ТЕПЕРЬ МОЖНО МЕНЯТЬ РАЗМЕР
+            
+            ttk.Label(admin_win, text="Администрирование", font=('Arial', 14, 'bold')).pack(pady=10)
+            
+            notebook = ttk.Notebook(admin_win)
+            notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            
+            # ========== ВКЛАДКА 1: База данных ==========
+            tab1 = ttk.Frame(notebook)
+            notebook.add(tab1, text="📦 База данных")
+            
+            ttk.Label(tab1, text="Управление базой изделий", font=('Arial', 11)).pack(pady=10)
+            ttk.Button(tab1, text="📥 Импорт базы из Excel",
+                      command=lambda: [self.import_database(), admin_win.destroy()],
+                      width=30).pack(pady=5)
+            ttk.Button(tab1, text="🗑️ Очистить базу изделий",
+                      command=self.clear_database,
+                      width=30).pack(pady=5)
+            ttk.Button(tab1, text="📦 Очистить склад",
+                      command=self.clear_inventory,
+                      width=30).pack(pady=5)
+            ttk.Separator(tab1, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+            ttk.Label(tab1, text="Очистка нестандартных изделий:", font=('Arial', 9, 'italic')).pack(pady=2)
+            ttk.Button(tab1, text="🗑️ Удалить только нестандартные",
+                      command=lambda: [self.delete_nonstandard_items(), admin_win.destroy()],
+                      width=30).pack(pady=5)
+            ttk.Separator(tab1, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+            def migrate_orders_dialog(parent):
+                """Диалог обновления года для существующих заказов"""
+                from orders_db import migrate_orders_to_current_year
+                if not messagebox.askyesno("Подтверждение",
+                                          "Обновить год для всех заказов без order_year?\n"
+                                          "Все заказы, у которых не указан год, получат текущий год.\n"
+                                          "Это нужно для корректной загрузки старых заказов.",
+                                          parent=parent):
+                    return
+                # Запускаем миграцию
+                updated_count = migrate_orders_to_current_year()
+                if updated_count > 0:
+                    messagebox.showinfo("Успех",
+                                       f"✅ Миграция завершена!\n"
+                                       f"Обновлено заказов: {updated_count}\n"
+                                       "Теперь все заказы должны загружаться корректно.",
+                                       parent=parent)
+                elif updated_count == 0:
+                    messagebox.showinfo("Информация",
+                                       "✅ Все заказы уже имеют год.\n"
+                                       "Миграция не требуется.",
+                                       parent=parent)
+                else:
+                    messagebox.showerror("Ошибка",
+                                        "❌ Произошла ошибка при миграции!\n"
+                                        "Проверьте лог ошибок.",
+                                        parent=parent)
+            
+            ttk.Button(tab1, text="🔄 Обновить год заказов (миграция)",
+                      command=lambda: migrate_orders_dialog(admin_win),
+                      width=30).pack(pady=5)
+            ttk.Button(tab1, text="🗑️ Очистить все заказы",
+                      command=lambda: [self.clear_all_orders(), admin_win.destroy()],
+                      width=30).pack(pady=5)
+            # ✅ НОВАЯ КНОПКА - МИГРАЦИЯ ВЕДУЩИХ НУЛЕЙ
+            ttk.Separator(tab1, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+            ttk.Label(tab1, text="Миграция данных:", font=('Arial', 9, 'italic')).pack(pady=2)
+
+            def migrate_remove_zeros_dialog(parent):
+                """Диалог удаления ведущих нулей из номеров заказов"""
+                from orders_db import migrate_remove_leading_zeros
+                
+                if not messagebox.askyesno("Подтверждение",
+                    "⚠️ ВНИМАНИЕ!\n\n"
+                    "Будут удалены ведущие нули из номеров ВСЕХ заказов.\n"
+                    "Например: 00123 → 123, 00045 → 45\n\n"
+                    "Это затронет:\n"
+                    "• Таблицу заказов (orders)\n"
+                    "• Таблицу транзакций (inventory_transactions)\n"
+                    "• Таблицу списанных заказов (deducted_orders)\n\n"
+                    "Рекомендуется создать бэкап перед продолжением!\n"
+                    "Продолжить?",
+                    parent=parent):
+                    return
+                
+                # Показываем индикатор выполнения
+                progress_win = tk.Toplevel(parent)
+                progress_win.title("Миграция данных")
+                progress_win.geometry("400x150")
+                progress_win.transient(parent)
+                progress_win.grab_set()
+                
+                ttk.Label(progress_win, text="Удаление ведущих нулей...", 
+                          font=('Arial', 11)).pack(pady=20)
+                
+                progress = ttk.Progressbar(progress_win, mode='indeterminate')
+                progress.pack(fill=tk.X, padx=20, pady=10)
+                progress.start(10)
+                
+                # Запускаем миграцию в отдельном потоке
+                def run_migration():
+                    result = migrate_remove_leading_zeros()
+                    progress.stop()
+                    progress_win.destroy()
+                    
+                    if result > 0:
+                        messagebox.showinfo("Успех",
+                            f"✅ Миграция завершена!\n\n"
+                            f"Обновлено заказов: {result}\n\n"
+                            f"Теперь все номера заказов не имеют ведущих нулей.",
+                            parent=parent)
+                    elif result == 0:
+                        messagebox.showinfo("Информация",
+                            "✅ Все заказы уже не имеют ведущих нулей.\n\n"
+                            "Миграция не требуется.",
+                            parent=parent)
+                    else:
+                        messagebox.showerror("Ошибка",
+                            "❌ Произошла ошибка при миграции!\n\n"
+                            "Проверьте лог ошибок.",
+                            parent=parent)
+                
+                import threading
+                thread = threading.Thread(target=run_migration)
+                thread.daemon = True
+                thread.start()
+
+            ttk.Button(tab1, text="🔄 Удалить ведущие нули из номеров заказов",
+                      command=lambda: migrate_remove_zeros_dialog(admin_win),
+                      width=40).pack(pady=5)
+
+            ttk.Separator(tab1, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)                      
+            ttk.Separator(tab1, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+            ttk.Button(tab1, text="🔑 Сбросить лицензию",
+                      command=lambda: [self.reset_license(), admin_win.destroy()],
+                      width=30).pack(pady=5)
+
+            # ========== ВКЛАДКА 2: Настройки окна ==========
+            tab2 = ttk.Frame(notebook)
+            notebook.add(tab2, text="⚙️ Настройки окна")
+            
+            ttk.Label(tab2, text="Параметры окна программы", font=('Arial', 11)).pack(pady=10)
+            
+            current_width = self.config.get('window_width', 1200)
+            current_height = self.config.get('window_height', 700)
+            current_x = self.config.get('window_x', 100)
+            current_y = self.config.get('window_y', 100)
+            current_sash = self.config.get('sash_position', 400)
+            
+            size_frame = ttk.LabelFrame(tab2, text="Размер окна", padding=10)
+            size_frame.pack(fill=tk.X, padx=20, pady=5)
+            
+            ttk.Label(size_frame, text="Ширина:").grid(row=0, column=0, sticky=tk.W, pady=2)
+            width_var = tk.StringVar(size_frame, value=str(current_width))
+            width_entry = ttk.Entry(size_frame, textvariable=width_var, width=10)
+            width_entry.grid(row=0, column=1, pady=2, padx=5)
+            
+            ttk.Label(size_frame, text="Высота:").grid(row=1, column=0, sticky=tk.W, pady=2)
+            height_var = tk.StringVar(size_frame, value=str(current_height))
+            height_entry = ttk.Entry(size_frame, textvariable=height_var, width=10)
+            height_entry.grid(row=1, column=1, pady=2, padx=5)
+            
+            pos_frame = ttk.LabelFrame(tab2, text="Позиция на экране", padding=10)
+            pos_frame.pack(fill=tk.X, padx=20, pady=5)
+            
+            ttk.Label(pos_frame, text="Позиция X:").grid(row=0, column=0, sticky=tk.W, pady=2)
+            x_var = tk.StringVar(pos_frame, value=str(current_x))
+            x_entry = ttk.Entry(pos_frame, textvariable=x_var, width=10)
+            x_entry.grid(row=0, column=1, pady=2, padx=5)
+            
+            ttk.Label(pos_frame, text="Позиция Y:").grid(row=1, column=0, sticky=tk.W, pady=2)
+            y_var = tk.StringVar(pos_frame, value=str(current_y))
+            y_entry = ttk.Entry(pos_frame, textvariable=y_var, width=10)
+            y_entry.grid(row=1, column=1, pady=2, padx=5)
+            
+            sash_frame = ttk.LabelFrame(tab2, text="Разделитель", padding=10)
+            sash_frame.pack(fill=tk.X, padx=20, pady=5)
+            
+            ttk.Label(sash_frame, text="Позиция разделителя:").grid(row=0, column=0, sticky=tk.W, pady=2)
+            sash_var = tk.StringVar(sash_frame, value=str(current_sash))
+            sash_entry = ttk.Entry(sash_frame, textvariable=sash_var, width=10)
+            sash_entry.grid(row=0, column=1, pady=2, padx=5)
+            
+            ttk.Label(sash_frame, text="(левая/правая часть)", font=('Arial', 8)).grid(row=1, column=0, columnspan=2)
+            
+            btn_frame = ttk.Frame(tab2)
+            btn_frame.pack(fill=tk.X, pady=10)
+            
+            def apply_window_settings():
+                try:
+                    self.config['window_width'] = int(width_var.get())
+                    self.config['window_height'] = int(height_var.get())
+                    self.config['window_x'] = int(x_var.get())
+                    self.config['window_y'] = int(y_var.get())
+                    self.config['sash_position'] = int(sash_var.get())
+                    self.root.geometry(f"{width_var.get()}x{height_var.get()}+{x_var.get()}+{y_var.get()}")
+                    save_config(self.config)
+                    messagebox.showinfo("Успех", "Настройки окна сохранены!\nИзменения вступят после перезапуска программы.")
+                    admin_win.destroy()
+                except ValueError:
+                    messagebox.showerror("Ошибка", "Введите корректные числа!")
+            
+            ttk.Button(btn_frame, text="✅ Применить", command=apply_window_settings, width=15).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text="❌ Отмена", command=admin_win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+            
+            # ========== ВКЛАДКА 3: Информация ==========
+            tab3 = ttk.Frame(notebook)
+            notebook.add(tab3, text="ℹ️ Информация")
+            
+            info_text = f"""
+    Программа: Заказ МК
+    Версия: 1.7
+    Лицензия: MK-2024-PRO-LICENSE
+
+    База данных:
+    {self.db_file}
+
+    Конфиг:
+    {self.config_file if hasattr(self, 'config_file') else 'config.json'}
+
+    Параметры окна:
+    Ширина: {current_width}
+    Высота: {current_height}
+    Позиция X: {current_x}
+    Позиция Y: {current_y}
+    Разделитель: {current_sash}
+    """
+            info_label = tk.Label(tab3, text=info_text, justify=tk.LEFT, font=('Consolas', 9))
+            info_label.pack(padx=20, pady=20, anchor=tk.W)
+            
+            # ========== ✅ ВКЛАДКА 4: КОНСОЛЬ ОШИБОК ==========
+            tab4 = ttk.Frame(notebook)
+            notebook.add(tab4, text="🐛 Консоль ошибок")
+            
+            # Заголовок
+            ttk.Label(tab4, text="Журнал ошибок программы", font=('Arial', 12, 'bold')).pack(pady=5)
+            
+            # ✅ ФРЕЙМ ФИЛЬТРОВ
+            filter_frame = ttk.LabelFrame(tab4, text="Фильтры", padding=10)
+            filter_frame.pack(fill=tk.X, padx=10, pady=5)
+            
+            # Дата начала
+            ttk.Label(filter_frame, text="С даты:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+            from tkcalendar import DateEntry
+            try:
+                start_date_entry = DateEntry(filter_frame, width=12, 
+                                            background='darkblue', foreground='white',
+                                            borderwidth=2, locale='ru_RU')
+                start_date_entry.set_date(datetime.now().replace(day=1))  # С начала месяца
+            except:
+                start_date_entry = ttk.Entry(filter_frame, width=12)
+                start_date_entry.insert(0, datetime.now().replace(day=1).strftime('%d.%m.%Y'))
+            start_date_entry.grid(row=0, column=1, padx=5, pady=2)
+            
+            # Дата конца
+            ttk.Label(filter_frame, text="По дату:").grid(row=0, column=2, sticky=tk.W, padx=5, pady=2)
+            try:
+                end_date_entry = DateEntry(filter_frame, width=12,
+                                          background='darkblue', foreground='white',
+                                          borderwidth=2, locale='ru_RU')
+                end_date_entry.set_date(datetime.now())  # По сегодня
+            except:
+                end_date_entry = ttk.Entry(filter_frame, width=12)
+                end_date_entry.insert(0, datetime.now().strftime('%d.%m.%Y'))
+            end_date_entry.grid(row=0, column=3, padx=5, pady=2)
+            
+            # Поиск по тексту
+            ttk.Label(filter_frame, text="Поиск:").grid(row=0, column=4, sticky=tk.W, padx=5, pady=2)
+            search_entry = ttk.Entry(filter_frame, width=20)
+            search_entry.grid(row=0, column=5, padx=5, pady=2)
+            search_entry.insert(0, "Введите текст...")
+            
+            # ✅ ОБРАБОТЧИКИ ДЛЯ PLACEHOLDER
+            def on_search_focus(event):
+                if search_entry.get() == "Введите текст...":
+                    search_entry.delete(0, tk.END)
+                    search_entry.config(foreground='black')
+            
+            def on_search_leave(event):
+                if not search_entry.get():
+                    search_entry.insert(0, "Введите текст...")
+                    search_entry.config(foreground='gray')
+            
+            search_entry.config(foreground='gray')
+            search_entry.bind('<FocusIn>', on_search_focus)
+            search_entry.bind('<FocusOut>', on_search_leave)
+            
+            # Кнопки фильтров
+            def apply_filters():
+                """Применение фильтров"""
+                # Получаем даты
+                try:
+                    start_date = start_date_entry.get_date() if hasattr(start_date_entry, 'get_date') else datetime.strptime(start_date_entry.get(), '%d.%m.%Y')
+                    end_date = end_date_entry.get_date() if hasattr(end_date_entry, 'get_date') else datetime.strptime(end_date_entry.get(), '%d.%m.%Y')
+                    end_date = end_date.replace(hour=23, minute=59, second=59)
+                except:
+                    start_date = None
+                    end_date = None
+                
+                # ✅ ПРОВЕРЯЕМ НА PLACEHOLDER
+                search_text = search_entry.get().strip()
+                if search_text == "Введите текст...":
+                    search_text = None
+                
+                # Загружаем ошибки
+                from error_logger import get_error_logs
+                errors = get_error_logs(start_date, end_date, search_text)
+                
+                # Обновляем таблицу
+                load_errors_to_tree(errors)
+                
+                # ✅ ИСПРАВЛЕНО: added master=admin_win
+                status_var.set(f"Найдено ошибок: {len(errors)}")
+            
+            def clear_filters():
+                """Сброс фильтров"""
+                try:
+                    start_date_entry.set_date(datetime.now().replace(day=1))
+                    end_date_entry.set_date(datetime.now())
+                except:
+                    start_date_entry.delete(0, tk.END)
+                    start_date_entry.insert(0, datetime.now().replace(day=1).strftime('%d.%m.%Y'))
+                    end_date_entry.delete(0, tk.END)
+                    end_date_entry.insert(0, datetime.now().strftime('%d.%m.%Y'))
+                
+                search_entry.delete(0, tk.END)
+                search_entry.insert(0, "Введите текст...")
+                search_entry.config(foreground='gray')
+                
+                apply_filters()
+            
+            btn_frame = ttk.Frame(filter_frame)
+            btn_frame.grid(row=0, column=6, padx=10, pady=2)
+            ttk.Button(btn_frame, text="🔍 Применить", command=apply_filters, width=15).pack(side=tk.LEFT, padx=2)
+            ttk.Button(btn_frame, text="🔄 Сброс", command=clear_filters, width=10).pack(side=tk.LEFT, padx=2)
+            
+            # ✅ СТАТУС - ИСПРАВЛЕНО: added master=admin_win
+            status_var = tk.StringVar(master=admin_win, value="Найдено ошибок: 0")
+            ttk.Label(filter_frame, textvariable=status_var, foreground='blue').grid(row=1, column=0, columnspan=7, sticky=tk.W, padx=5, pady=5)
+            
+            # ✅ ТАБЛИЦА ОШИБОК
+            tree_frame = ttk.Frame(tab4)
+            tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            
+            columns = ('№', 'Дата', 'Тип', 'Сообщение')
+            error_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+            
+            for col in columns:
+                error_tree.heading(col, text=col)
+            
+            error_tree.column('№', width=50, anchor='center')
+            error_tree.column('Дата', width=140, anchor='center')
+            error_tree.column('Тип', width=150, anchor='center')
+            error_tree.column('Сообщение', width=400, anchor='w')
+            
+            scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=error_tree.yview)
+            error_tree.configure(yscrollcommand=scrollbar.set)
+            error_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # ✅ ДЕТАЛИ ОШИБКИ (при двойном клике)
+            def show_error_details(event=None):
+                """Показывает полную информацию об ошибке"""
+                selection = error_tree.selection()
+                if not selection:
+                    return
+                
+                item = error_tree.item(selection[0])
+                error_idx = int(item['values'][0]) - 1
+                
+                from error_logger import get_error_logs
+                errors = get_error_logs()
+                
+                if error_idx < len(errors):
+                    error = errors[error_idx]
+                    
+                    # Создаем окно с деталями
+                    details_win = tk.Toplevel(admin_win)
+                    details_win.title(f"Ошибка от {error['timestamp_str']}")
+                    details_win.geometry("800x600")
+                    details_win.transient(admin_win)
+                    
+                    # Заголовок
+                    ttk.Label(details_win, text=f"Ошибка от {error['timestamp_str']}", 
+                             font=('Arial', 12, 'bold')).pack(pady=10)
+                    
+                    # Информация
+                    info_frame = ttk.LabelFrame(details_win, text="Информация", padding=10)
+                    info_frame.pack(fill=tk.X, padx=10, pady=5)
+                    
+                    ttk.Label(info_frame, text=f"Тип: {error['type']}", 
+                             font=('Consolas', 9)).pack(anchor=tk.W)
+                    ttk.Label(info_frame, text=f"Сообщение: {error['message']}", 
+                             font=('Consolas', 9)).pack(anchor=tk.W)
+                    
+                    # Трассировка
+                    tb_frame = ttk.LabelFrame(details_win, text="Трассировка стека", padding=10)
+                    tb_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+                    
+                    tb_text = tk.Text(tb_frame, wrap=tk.WORD, font=('Consolas', 8), height=20)
+                    tb_text.pack(fill=tk.BOTH, expand=True)
+                    tb_text.insert('1.0', error.get('traceback', 'Нет данных'))
+                    tb_text.config(state='disabled')
+                    
+                    # Кнопки
+                    btn_frame = ttk.Frame(details_win)
+                    btn_frame.pack(pady=10)
+                    
+                    def copy_traceback():
+                        details_win.clipboard_clear()
+                        details_win.clipboard_append(error.get('traceback', ''))
+                        messagebox.showinfo("Успех", "Трассировка скопирована в буфер обмена!")
+                    
+                    ttk.Button(btn_frame, text="📋 Копировать", command=copy_traceback, width=15).pack(side=tk.LEFT, padx=5)
+                    ttk.Button(btn_frame, text="❌ Закрыть", command=details_win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+            
+            error_tree.bind('<Double-1>', show_error_details)
+            
+            # ✅ КНОПКИ УПРАВЛЕНИЯ (ДОБАВЛЕНА КНОПКА ОЧИСТКИ!)
+            control_frame = ttk.Frame(tab4)
+            control_frame.pack(fill=tk.X, padx=10, pady=10)
+            
+            def refresh_logs():
+                """Обновить логи"""
+                apply_filters()
+            
+            def open_log_file():
+                """Открыть файл логов"""
+                from error_logger import get_log_file_path
+                log_path = get_log_file_path()
+                if os.path.exists(log_path):
+                    os.startfile(log_path)
+                else:
+                    messagebox.showinfo("Информация", "Файл логов ещё не создан (ошибок не было)")
+            
+            def clear_logs():
+                """✅ Очистить логи ошибок"""
+                if messagebox.askyesno("Подтверждение",
+                                      "Очистить ВСЕ логи ошибок?\n"
+                                      "Это действие нельзя отменить!\n\n"
+                                      "Файл: errors.log"):
+                    from error_logger import clear_error_logs
+                    if clear_error_logs():
+                        messagebox.showinfo("Успех", "Логи ошибок очищены!")
+                        refresh_logs()
+                        status_var.set("Найдено ошибок: 0")
+                    else:
+                        messagebox.showerror("Ошибка", "Не удалось очистить логи!")
+            
+            ttk.Button(control_frame, text="🔄 Обновить", command=refresh_logs, width=15).pack(side=tk.LEFT, padx=5)
+            ttk.Button(control_frame, text="📂 Открыть файл", command=open_log_file, width=15).pack(side=tk.LEFT, padx=5)
+            ttk.Button(control_frame, text="🗑️ Очистить журнал", command=clear_logs, width=15).pack(side=tk.LEFT, padx=5)  # ✅ НОВАЯ КНОПКА!
+            
+            # ✅ ЗАГРУЗКА ОШИБОК ПРИ ОТКРЫТИИ
+            def load_errors_to_tree(errors):
+                """Загружает ошибки в таблицу"""
+                for item in error_tree.get_children():
+                    error_tree.delete(item)
+                
+                for i, error in enumerate(errors, 1):
+                    # Обрезаем длинное сообщение
+                    msg = error.get('message', '')
+                    if len(msg) > 80:
+                        msg = msg[:77] + '...'
+                    
+                    error_tree.insert('', tk.END, values=(
+                        i,
+                        error['timestamp_str'],
+                        error.get('type', 'Unknown'),
+                        msg
+                    ))
+            
+            # Автоматическая загрузка при открытии вкладки
+            admin_win.after(300, apply_filters)
+            
+            # Кнопка закрытия
+            ttk.Button(admin_win, text="❌ Закрыть", command=admin_win.destroy, width=15).pack(pady=10)
+            
+        elif password:
+            messagebox.showerror("Ошибка", "Неверный пароль!")
+
+    def show_backup_orders(parent):
+        """✅ Показывает все заказы с бэкапами"""
+        from order_backup import get_all_backup_orders, restore_order_from_backup
+        
+        backup_orders = get_all_backup_orders()
+        
+        if not backup_orders:
+            messagebox.showinfo("Информация", "Бэкапы заказов не найдены!", parent=parent)
+            return
+        
+        backup_win = tk.Toplevel(parent)
+        backup_win.title("📋 Бэкапы заказов")
+        backup_win.geometry("800x500")
+        backup_win.transient(parent)
+        backup_win.grab_set()
+        
+        ttk.Label(backup_win, text="Бэкапы заказов", font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # Таблица бэкапов
+        columns = ('Заказ', 'Год', 'Бэкапов', 'Последний', 'Позиций')
+        backup_tree = ttk.Treeview(backup_win, columns=columns, show='headings', height=15)
+        
+        for col in columns:
+            backup_tree.heading(col, text=col)
+            backup_tree.column(col, width=120)
+        
+        backup_tree.column('Заказ', width=150)
+        backup_tree.column('Последний', width=180)
+        
+        backup_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Заполняем
+        for order in backup_orders:
+            backup_tree.insert('', tk.END, values=(
+                order['order_number'],
+                order['order_year'],
+                order['backup_count'],
+                order['last_backup'],
+                order['items_count']
+            ), tags=(order['order_number'], order['order_year']))
+        
+        def restore_backup():
+            selection = backup_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для восстановления!", parent=backup_win)
+                return
+            
+            order_number = backup_tree.item(selection[0])['tags'][0]
+            order_year = int(backup_tree.item(selection[0])['tags'][1])
+            
+            from order_backup import get_order_backups
+            backups = get_order_backups(order_number, order_year)
+            
+            if backups:
+                # Показываем окно выбора бэкапа (как в load_selected)
+                # ... (код аналогичный load_selected) ...
+                messagebox.showinfo("Информация", 
+                                   f"Для восстановления загрузите заказ №{order_number}\n"
+                                   f"из окна 'Сохраненные заказы'", 
+                                   parent=backup_win)
+            else:
+                messagebox.showerror("Ошибка", "Бэкапы не найдены!", parent=backup_win)
+        
+        btn_frame = ttk.Frame(backup_win)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="🔄 Восстановить", command=restore_backup, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="❌ Закрыть", command=backup_win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+
+    def show_help(self):
+        help_win = tk.Toplevel(self.root)
+        help_win.title("Справка и Лицензия")
+        help_win.geometry("850x700")  # ✅ Увеличил высоту для новой вкладки
+        
+        def on_help_closing():
+            help_win.destroy()
+        
+        help_win.protocol("WM_DELETE_WINDOW", on_help_closing)
+        
+        help_win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (850 // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (700 // 2)
+        help_win.geometry(f"+{x}+{y}")
+        
+        notebook = ttk.Notebook(help_win)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # ========== ВКЛАДКА 1: Справка ==========
+        help_frame = ttk.Frame(notebook)
+        notebook.add(help_frame, text="📖 Справка")
+        
+        help_text = tk.Text(help_frame, wrap=tk.WORD, font=('Consolas', 10))
+        help_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        help_text.insert('1.0', HELP_TEXT)
+        help_text.config(state='disabled')
+        
+        # ========== ВКЛАДКА 2: Лицензия ==========
+        license_frame = ttk.Frame(notebook)
+        notebook.add(license_frame, text="🔑 Лицензия")
+        
+        config = load_config()
+        if config.get('license_activated'):
+            status_text = "✅ Лицензия активирована"
+            status_color = "green"
+        else:
+            status_text = "⏳ Демо-версия"
+            status_color = "orange"
+        
+        status_label = ttk.Label(license_frame, text=status_text, foreground=status_color, font=('Arial', 12))
+        status_label.pack(pady=5)
+        
+        ttk.Label(license_frame, text="Лицензионный ключ:", font=('Arial', 11, 'bold')).pack(pady=10)
+        
+        entry_frame = ttk.Frame(license_frame)
+        entry_frame.pack(pady=5)
+        
+        self.license_entry = ttk.Entry(entry_frame, width=40, show="*")
+        self.license_entry.pack(side=tk.LEFT, padx=5)
+        self.license_entry.focus()
+        
+        show_password = False
+        
+        def toggle_password():
+            nonlocal show_password
+            if show_password:
+                self.license_entry.config(show="*")
+                show_btn.config(text="👁️ Показать")
+            else:
+                self.license_entry.config(show="")
+                show_btn.config(text="🔒 Скрыть")
+            show_password = not show_password
+        
+        show_btn = ttk.Button(entry_frame, text="👁️ Показать", command=toggle_password, width=15)
+        show_btn.pack(side=tk.LEFT, padx=5)
+        
+        context_menu = tk.Menu(self.license_entry, tearoff=0)
+        
+        def copy_text():
+            self.license_entry.event_generate('<<Copy>>')
+        
+        def cut_text():
+            self.license_entry.event_generate('<<Cut>>')
+        
+        def paste_text():
+            self.license_entry.event_generate('<<Paste>>')
+        
+        def select_all_text():
+            self.license_entry.select_range(0, tk.END)
+            self.license_entry.icursor(tk.END)
+        
+        context_menu.add_command(label="✂️ Вырезать", command=cut_text)
+        context_menu.add_command(label="📋 Копировать", command=copy_text)
+        context_menu.add_command(label="📌 Вставить", command=paste_text)
+        context_menu.add_separator()
+        context_menu.add_command(label="✅ Выделить всё", command=select_all_text)
+        
+        def show_context_menu(event):
+            context_menu.tk_popup(event.x_root, event.y_root)
+        
+        self.license_entry.bind('<Button-3>', show_context_menu)
+        
+        def activate_license_func():
+            code = self.license_entry.get().strip()
+            if not code:
+                messagebox.showwarning("Внимание", "Введите лицензионный ключ!")
+                return
+            
+            from config import activate_license
+            if activate_license(code):
+                status_label.config(text="✅ Лицензия активирована", foreground="green")
+                self.root.title("Заказ МК")
+                
+                if hasattr(self, 'demo_label'):
+                    self.demo_label.destroy()
+                
+                from config import load_config
+                self.config = load_config()
+                
+                messagebox.showinfo("Успех", "✅ Лицензия активирована!\n\nПрограмма будет работать без ограничений.")
+                help_win.destroy()
+            else:
+                messagebox.showerror("Ошибка", "❌ Неверный лицензионный ключ!")
+        
+        ttk.Button(license_frame, text="Активировать", command=activate_license_func, width=20).pack(pady=10)
+        self.license_entry.bind('<Return>', lambda e: activate_license_func())
+        
+        # ========== ВКЛАДКА 3: Настройки ==========
+        settings_frame = ttk.Frame(notebook)
+        notebook.add(settings_frame, text="⚙️ Настройки")
+
+        ttk.Label(settings_frame, text="Настройки программы", font=('Arial', 11, 'bold')).pack(pady=3)
+
+        # Фрейм для автозагрузки
+        autoload_frame = ttk.LabelFrame(settings_frame, text="Автозагрузка", padding=5)
+        autoload_frame.pack(fill=tk.X, padx=10, pady=3)
+
+        # Проверяем текущее состояние автозагрузки
+        import winreg
+        is_in_startup = False
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+            try:
+                value, _ = winreg.QueryValueEx(key, "ZakazMK")
+                is_in_startup = True
+            except:
+                pass
+            winreg.CloseKey(key)
+        except:
+            pass
+
+        autoload_var = tk.BooleanVar(master=settings_frame, value=is_in_startup)
+
+        def toggle_autoload():
+            from tray import add_to_startup, remove_from_startup
+            if autoload_var.get():
+                if add_to_startup():
+                    messagebox.showinfo("Успех", "Программа добавлена в автозагрузку")
+                    update_status_info()
+                else:
+                    messagebox.showerror("Ошибка", "Не удалось добавить в автозагрузку")
+                    autoload_var.set(False)
+            else:
+                if remove_from_startup():
+                    messagebox.showinfo("Успех", "Программа удалена из автозагрузки")
+                    update_status_info()
+                else:
+                    messagebox.showerror("Ошибка", "Не удалось удалить из автозагрузки")
+                    autoload_var.set(True)
+
+        ttk.Checkbutton(autoload_frame, text="Запускать при включении компьютера",
+                       variable=autoload_var, command=toggle_autoload).pack(anchor=tk.W, pady=2)
+
+        # Фрейм для режима запуска
+        startup_frame = ttk.LabelFrame(settings_frame, text="Режим запуска", padding=5)
+        startup_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        start_minimized_var = tk.BooleanVar(master=settings_frame, value=self.config.get('start_minimized', False))
+
+        def toggle_start_minimized():
+            self.config['start_minimized'] = start_minimized_var.get()
+            from config import save_config
+            save_config(self.config)
+            update_status_info()
+
+        ttk.Checkbutton(startup_frame, text="Запускать свернутым в трей",
+                       variable=start_minimized_var, command=toggle_start_minimized).pack(anchor=tk.W, pady=2)
+
+        # === РЕЖИМ ЗАКРЫТИЯ ===
+        close_frame = ttk.LabelFrame(settings_frame, text="Режим закрытия", padding=5)
+        close_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        close_to_tray_var = tk.BooleanVar(master=settings_frame, value=self.config.get('close_to_tray', True))
+
+        def toggle_close_to_tray():
+            self.config['close_to_tray'] = close_to_tray_var.get()
+            from config import save_config
+            save_config(self.config)
+            update_status_info()
+
+        ttk.Checkbutton(close_frame, text="Закрывать в трей (не завершать программу)",
+                       variable=close_to_tray_var, command=toggle_close_to_tray).pack(anchor=tk.W, pady=2)
+
+        # === СОХРАНЕНИЕ ПРИ ЗАКРЫТИИ ===
+        save_frame = ttk.LabelFrame(settings_frame, text="Сохранение заказа", padding=5)
+        save_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        ask_save_var = tk.BooleanVar(master=settings_frame, value=self.config.get('ask_save_on_close', True))
+
+        def toggle_ask_save():
+            self.config['ask_save_on_close'] = ask_save_var.get()
+            from config import save_config
+            save_config(self.config)
+            update_status_info()
+
+        ttk.Checkbutton(save_frame, text="Спрашивать о сохранении при закрытии",
+                       variable=ask_save_var, command=toggle_ask_save).pack(anchor=tk.W, pady=2)
+
+        # === АВТОМАТИЧЕСКИЕ БЭКАПЫ ===
+        backup_frame = ttk.LabelFrame(settings_frame, text="Автоматические бэкапы", padding=8)
+        backup_frame.pack(fill=tk.X, padx=15, pady=5)
+
+        auto_backup_var = tk.BooleanVar(master=settings_frame, 
+                                        value=self.config.get('auto_backup_enabled', True))
+
+        def toggle_auto_backup():
+            self.config['auto_backup_enabled'] = auto_backup_var.get()
+            from config import save_config
+            save_config(self.config)
+            if auto_backup_var.get():
+                print("✅ Автоматические бэкапы: ВКЛЮЧЕНЫ")
+            else:
+                print("❌ Автоматические бэкапы: ОТКЛЮЧЕНЫ")
+
+        ttk.Checkbutton(backup_frame, text="Делать автоматические бэкапы",
+                       variable=auto_backup_var, command=toggle_auto_backup).pack(anchor=tk.W, pady=2)
+
+        # === НОВЫЙ ФРЕЙМ - РАСКРОЙ МАТЕРИАЛОВ ===
+        cutting_frame = ttk.LabelFrame(settings_frame, text="Раскрой материалов", padding=8)
+        cutting_frame.pack(fill=tk.X, padx=15, pady=5)
+
+        # ✅ ЧЕКБОКС "Показывать раскрой"
+        show_cutting_var = tk.BooleanVar(master=settings_frame, 
+                                         value=self.config.get('show_cutting_maps', False))
+
+        def toggle_show_cutting():
+            self.config['show_cutting_maps'] = show_cutting_var.get()
+            from config import save_config
+            save_config(self.config)
+            print(f"📊 Показ раскроя: {'✅ Включен' if show_cutting_var.get() else '❌ Отключен'}")
+
+        ttk.Checkbutton(cutting_frame, text="Показывать раскрой в общем отчете",
+                       variable=show_cutting_var, command=toggle_show_cutting).pack(anchor=tk.W, pady=2)
+
+        ttk.Label(cutting_frame, text="Если снято - карты раскроя не будут добавляться в PDF", 
+                 font=('Arial', 7), foreground='gray').pack(anchor=tk.W)
+
+        # ✅ СТРОКА С ДЛИНОЙ ХЛЫСТА И ТОЛЩИНОЙ РЕЗА (в одну строку!)
+        settings_row = ttk.Frame(cutting_frame)
+        settings_row.pack(fill=tk.X, pady=(10, 2))
+
+        # ✅ ПОЛЕ ВВОДА длины хлыста (слева)
+        length_frame = ttk.Frame(settings_row)
+        length_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 20))
+
+        ttk.Label(length_frame, text="Длина хлыста (мм):", font=('Arial', 8)).pack(anchor=tk.W, pady=(0, 2))
+
+        stock_length_var = tk.StringVar(master=settings_frame, 
+                                       value=str(self.config.get('cutting_stock_length', 6000)))
+        stock_length_entry = ttk.Entry(length_frame, textvariable=stock_length_var, width=12)
+        stock_length_entry.pack(anchor=tk.W, pady=2)
+
+        ttk.Label(length_frame, text="Стандартные: 3000 (3м), 6000 (6м)", 
+                 font=('Arial', 7), foreground='gray').pack(anchor=tk.W)
+
+        # ✅ ПОЛЕ ДЛЯ ТОЛЩИНЫ РЕЗА (справа)
+        kerf_frame = ttk.Frame(settings_row)
+        kerf_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        ttk.Label(kerf_frame, text="Толщина реза (мм):", font=('Arial', 8)).pack(anchor=tk.W, pady=(0, 2))
+
+        kerf_var = tk.StringVar(master=settings_frame, 
+                               value=str(self.config.get('kerf_width', 3)))
+        kerf_entry = ttk.Entry(kerf_frame, textvariable=kerf_var, width=12)
+        kerf_entry.pack(anchor=tk.W, pady=2)
+
+        ttk.Label(kerf_frame, text="Обычно 2-4 мм", 
+                 font=('Arial', 7), foreground='gray').pack(anchor=tk.W)
+
+        def save_cutting_settings():
+            try:
+                # Сохраняем длину хлыста
+                length = int(stock_length_entry.get().strip())
+                if length < 1000 or length > 12000:
+                    raise ValueError("Длина должна быть от 1000 до 12000 мм")
+                self.config['cutting_stock_length'] = length
+                
+                # ✅ Сохраняем толщину реза
+                kerf = int(kerf_entry.get().strip())
+                if kerf < 0 or kerf > 10:
+                    raise ValueError("Толщина реза должна быть от 0 до 10 мм")
+                self.config['kerf_width'] = kerf
+                
+                from config import save_config
+                save_config(self.config)
+                messagebox.showinfo("Успех", 
+                                   f"Настройки раскроя сохранены:\n"
+                                   f"• Длина хлыста: {length}мм ({length/1000:.1f}м)\n"
+                                   f"• Толщина реза: {kerf}мм",
+                                   parent=help_win)
+                print(f"📏 Настройки раскроя сохранены: хлыст={length}мм, рез={kerf}мм")
+            except ValueError as e:
+                messagebox.showerror("Ошибка", 
+                                    f"Неверное значение: {e}",
+                                    parent=help_win)
+
+        ttk.Button(cutting_frame, text="💾 Сохранить", 
+                  command=save_cutting_settings, width=15).pack(anchor=tk.W, pady=5)
+
+        # ======================================
+        # Фрейм с информацией о текущем статусе
+        status_frame = ttk.LabelFrame(settings_frame, text="Текущий статус", padding=5)
+        status_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        status_info_var = tk.StringVar(master=settings_frame, value="")
+
+        def update_status_info():
+            info_text = f"Автозагрузка: {'✅ Включена' if autoload_var.get() else '❌ Отключена'} | "
+            info_text += f"Запуск в трее: {'✅ Включен' if start_minimized_var.get() else '❌ Отключен'} | "
+            info_text += f"Закрытие в трей: {'✅ Включено' if close_to_tray_var.get() else '❌ Отключено'} | "
+            info_text += f"Спрос о сохранении: {'✅ Включен' if ask_save_var.get() else '❌ Отключен'}"
+            status_info_var.set(info_text)
+
+        update_status_info()
+        ttk.Label(status_frame, textvariable=status_info_var, font=('Arial', 7)).pack(anchor=tk.W, pady=2)
+
+        # Кнопка закрытия
+        ttk.Button(settings_frame, text="✅ Закрыть", command=help_win.destroy, width=15).pack(pady=5)
+
+        # Кнопка закрытия для вкладки лицензии
+        ttk.Button(license_frame, text="Закрыть", command=help_win.destroy, width=15).pack(pady=5)
+        
+        # ========== ✅ ВКЛАДКА 4: БЭКАПЫ ==========
+        backup_frame = ttk.Frame(notebook)
+        notebook.add(backup_frame, text="💾 Бэкапы")
+        
+        # Заголовок
+        ttk.Label(backup_frame, text="Управление бэкапами базы данных", 
+                 font=('Arial', 12, 'bold')).pack(pady=10)
+        
+        # ✅ ФРЕЙМ СОЗДАНИЯ БЭКАПА
+        create_frame = ttk.LabelFrame(backup_frame, text="Создать бэкап", padding=10)
+        create_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(create_frame, text="Тип бэкапа:").pack(anchor=tk.W, pady=2)
+        backup_type_var = tk.StringVar(master=create_frame, value='all')
+        ttk.Radiobutton(create_frame, text="📦 Всё (база + склад + заказы)", 
+                       variable=backup_type_var, value='all').pack(anchor=tk.W)
+        ttk.Radiobutton(create_frame, text="📋 Только база изделий", 
+                       variable=backup_type_var, value='database').pack(anchor=tk.W)
+        ttk.Radiobutton(create_frame, text="📦 Только склад", 
+                       variable=backup_type_var, value='inventory').pack(anchor=tk.W)
+        ttk.Radiobutton(create_frame, text="📝 Только заказы", 
+                       variable=backup_type_var, value='orders').pack(anchor=tk.W)
+        
+        ttk.Label(create_frame, text="Комментарий:").pack(anchor=tk.W, pady=(10, 2))
+        comment_entry = ttk.Entry(create_frame, width=50)
+        comment_entry.pack(anchor=tk.W, pady=2)
+        ttk.Label(create_frame, text="(необязательно)", font=('Arial', 7), 
+                 foreground='gray').pack(anchor=tk.W)
+        
+        def create_backup_now():
+            from backup_manager import create_backup
+            backup_type = backup_type_var.get()
+            comment = comment_entry.get().strip()
+            
+            backup_file = create_backup(backup_type, comment)
+            if backup_file:
+                messagebox.showinfo("Успех", 
+                                   f"Бэкап создан!\n{backup_file}",
+                                   parent=help_win)
+                refresh_backup_list()
+            else:
+                messagebox.showerror("Ошибка", "Не удалось создать бэкап!", parent=help_win)
+        
+        ttk.Button(create_frame, text="💾 Создать бэкап", 
+                  command=create_backup_now, width=20).pack(pady=10)
+        
+        # ✅ ФРЕЙМ СПИСКА БЭКАПОВ
+        list_frame = ttk.LabelFrame(backup_frame, text="Доступные бэкапы", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Таблица бэкапов
+        columns = ('Дата', 'Тип', 'Файлов', 'Комментарий')
+        backup_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=10)
+        
+        for col in columns:
+            backup_tree.heading(col, text=col)
+            backup_tree.column(col, width=150)
+        
+        backup_tree.column('Комментарий', width=300)
+        
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=backup_tree.yview)
+        backup_tree.configure(yscrollcommand=scrollbar.set)
+        backup_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # ✅ КНОПКИ УПРАВЛЕНИЯ
+        btn_frame = ttk.Frame(backup_frame)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def refresh_backup_list():
+            """Обновляет список бэкапов"""
+            for item in backup_tree.get_children():
+                backup_tree.delete(item)
+            
+            from backup_manager import get_all_backups
+            backups = get_all_backups()
+            
+            for backup in backups:
+                type_names = {
+                    'all': '📦 Всё',
+                    'database': '📋 База',
+                    'inventory': '📦 Склад',
+                    'orders': '📝 Заказы'
+                }
+                type_name = type_names.get(backup['backup_type'], backup['backup_type'])
+                
+                backup_tree.insert('', tk.END, values=(
+                    backup['created_at'],
+                    type_name,
+                    backup['files_count'],
+                    backup['comment'] if backup['comment'] else '—'
+                ), tags=(backup['filepath'],))
+        
+        def restore_selected():
+            """Восстанавливает выбранный бэкап"""
+            selection = backup_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите бэкап для восстановления!", 
+                                      parent=help_win)
+                return
+            
+            backup_filepath = backup_tree.item(selection[0])['tags'][0]
+            
+            if not messagebox.askyesno("Подтверждение",
+                                      "⚠️ Внимание!\n\n"
+                                      "Восстановление заменит текущие данные бэкапом!\n"
+                                      "Рекомендуется создать бэкап текущих данных перед восстановлением.\n\n"
+                                      "Продолжить?",
+                                      parent=help_win):
+                return
+            
+            from backup_manager import restore_backup
+            if restore_backup(backup_filepath):
+                messagebox.showinfo("Успех", 
+                                   "Бэкап восстановлен!\n"
+                                   "Перезапустите программу для применения изменений.",
+                                   parent=help_win)
+            else:
+                messagebox.showerror("Ошибка", "Не удалось восстановить бэкап!", parent=help_win)
+        
+        def delete_selected():
+            """Удаляет выбранный бэкап"""
+            selection = backup_tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите бэкап для удаления!", 
+                                      parent=help_win)
+                return
+            
+            backup_filepath = backup_tree.item(selection[0])['tags'][0]
+            
+            if not messagebox.askyesno("Подтверждение",
+                                      "Удалить выбранный бэкап?\n"
+                                      "Это действие нельзя отменить!",
+                                      parent=help_win):
+                return
+            
+            from backup_manager import delete_backup
+            if delete_backup(backup_filepath):
+                messagebox.showinfo("Успех", "Бэкап удалён!", parent=help_win)
+                refresh_backup_list()
+            else:
+                messagebox.showerror("Ошибка", "Не удалось удалить бэкап!", parent=help_win)
+        
+        def open_backup_folder():
+            """Открывает папку с бэкапами"""
+            from backup_manager import BACKUP_DIR
+            if os.path.exists(BACKUP_DIR):
+                os.startfile(BACKUP_DIR)
+            else:
+                messagebox.showinfo("Информация", "Папка бэкапов ещё не создана", parent=help_win)
+        
+        ttk.Button(btn_frame, text="🔄 Обновить", command=refresh_backup_list, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🔄 Восстановить", command=restore_selected, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🗑️ Удалить", command=delete_selected, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="📂 Открыть папку", command=open_backup_folder, width=15).pack(side=tk.LEFT, padx=5)
+        
+        # ✅ СТАТИСТИКА
+        stats_frame = ttk.Frame(backup_frame)
+        stats_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        stats_var = tk.StringVar(master=stats_frame)
+        
+        def update_stats():
+            from backup_manager import get_backup_stats
+            stats = get_backup_stats()
+            size_mb = stats['total_size'] / (1024 * 1024)
+            stats_var.set(
+                f"Всего бэкапов: {stats['total_backups']} | "
+                f"Размер: {size_mb:.2f} МБ | "
+                f"Склад: {stats.get('inventory_count', 0)} | "  # ✅ ИСПРАВЛЕНО
+                f"Заказы: {stats.get('orders_count', 0)}"  # ✅ УБРАЛИ БАЗУ
+            )
+        
+        ttk.Label(stats_frame, textvariable=stats_var, font=('Arial', 9), 
+                 foreground='blue').pack(anchor=tk.W)
+        
+        # ✅ АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ПРИ ОТКРЫТИИ
+        backup_frame.after(300, lambda: [refresh_backup_list(), update_stats()])
+        
+        # Кнопка закрытия
+        ttk.Button(help_win, text="✅ Закрыть", command=help_win.destroy, width=15).pack(pady=10)
+    
+    def import_database(self):
+        file = filedialog.askopenfilename(
+            title="Выберите файл Excel",
+            filetypes=[("Excel files", "*.xls *.xlsx")])
+        
+        if not file:
+            return
+        
+        password = simpledialog.askstring("Пароль", "Введите пароль:", show='*')
+        if password:
+            if import_from_excel(file, password):
+                messagebox.showinfo("Успех", "База импортирована!")
+
+    def clear_database(self):
+        if messagebox.askyesno("Подтверждение", "Очистить ВСЮ базу изделий?"):
+            if os.path.exists(self.db_file):
+                os.remove(self.db_file)
+                messagebox.showinfo("Успех", "База изделий очищена!")
+
+    def clear_all_orders(self):
+        if messagebox.askyesno("Подтверждение", "Очистить ВСЕ заказы?\n\nЭто действие нельзя отменить!"):
+            clear_orders()
+            messagebox.showinfo("Успех", "Все заказы удалены!")
+
+    def reset_license(self):
+        if messagebox.askyesno("Подтверждение",
+            "Сбросить лицензию?\n"
+            "После этого программа снова будет работать в демо-режиме\n"
+            "и через 2 дня потребует активации.\n"
+            "Продолжить?"):
+            
+            from config import reset_license as reset_license_config
+            reset_license_config()
+            
+            from config import load_config
+            self.config = load_config()
+            
+            from config import get_demo_expiry
+            expiry = get_demo_expiry()
+            
+            # ✅ Обновляем заголовок окна
+            if expiry:
+                expiry_str = expiry.strftime('%d.%m.%Y %H:%M')
+                self.root.title(f"Заказ МК Демо-версия (до {expiry_str})")
+                print(f"✅ Демо-период обновлён до {expiry_str}")
+            else:
+                self.root.title("Заказ МК Демо-версия")
+            
+            # ✅ Обновляем демо-метку
+            if hasattr(self, 'demo_label'):
+                self.demo_label.destroy()
+            self.show_demo_label()
+            
+            messagebox.showinfo("Успех", 
+                f"✅ Лицензия сброшена!\n"
+                f"Демо-период обновлён до {expiry_str if expiry else 'не определён'}")
+
+    def view_orders(self):
+        """Отображение окна сохранённых заказов с сортировкой и поиском"""
+        orders = get_all_orders()
+        if not orders:
+            messagebox.showinfo("Заказы", "Сохраненные заказы не найдены!")
+            return
+        
+        win = tk.Toplevel(self.root)
+        win.title("Сохраненные заказы")
+        win.geometry("1200x600")  # ✅ Увеличил ширину для новых полей
+        win.transient(self.root)
+        win.grab_set()
+        
+        # Центрируем окно
+        win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (1200 // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (600 // 2)
+        win.geometry(f"1200x600+{x}+{y}")
+        
+        ttk.Label(win, text="Сохраненные заказы", font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # ✅ ФРЕЙМ ПОИСКА И ФИЛЬТРОВ
+        search_frame = ttk.Frame(win)
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(search_frame, text="Год:").pack(side=tk.LEFT, padx=5)
+        year_var = tk.StringVar(master=search_frame, value=str(datetime.now().year))
+        year_entry = ttk.Entry(search_frame, textvariable=year_var, width=10)
+        year_entry.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(search_frame, text="№ заказа:").pack(side=tk.LEFT, padx=5)
+        order_num_var = tk.StringVar(master=search_frame)
+        order_num_entry = ttk.Entry(search_frame, textvariable=order_num_var, width=15)
+        order_num_entry.pack(side=tk.LEFT, padx=5)
+        
+        def apply_filters():
+            """Применение фильтров по году и номеру заказа"""
+            year_filter = year_var.get().strip()
+            order_filter = order_num_var.get().strip()
+            
+            for item in tree.get_children():
+                tree.delete(item)
+            
+            filtered_orders = orders
+            
+            if year_filter:
+                try:
+                    year_int = int(year_filter)
+                    filtered_orders = [o for o in filtered_orders if o.get('order_year', datetime.now().year) == year_int]
+                except:
+                    pass
+            
+            if order_filter:
+                filtered_orders = [o for o in filtered_orders if order_filter.lower() in o.get('order_number', '').lower()]
+            
+            for i, order in enumerate(filtered_orders, 1):
+                created_at = order.get('created_at', '')
+                updated_at = order.get('updated_at', '')
+                order_year = order.get('order_year', datetime.now().year)
+                
+                if created_at:
+                    try:
+                        dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                        created_at = dt.strftime('%d.%m.%Y %H:%M')
+                    except:
+                        pass
+                
+                if updated_at:
+                    try:
+                        dt = datetime.strptime(updated_at, '%Y-%m-%d %H:%M:%S')
+                        updated_at = dt.strftime('%d.%m.%Y %H:%M')
+                    except:
+                        pass
+                
+                display_updated = "—" if updated_at == created_at else updated_at
+                items_count = order.get('items_count', 0)
+                
+                # Проверяем, списан ли заказ
+                from inventory_db import get_connection
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute('SELECT COUNT(*) FROM deducted_orders WHERE order_number = ? AND order_year = ?',
+                         (order['order_number'], order_year))
+                is_deducted = c.fetchone()[0] > 0
+                conn.close()
+                
+                deducted_text = "✅ Да" if is_deducted else "❌ Нет"
+                
+                tree.insert('', tk.END, values=(
+                    i,
+                    order['order_number'],
+                    order_year,
+                    created_at,
+                    display_updated,
+                    items_count,
+                    deducted_text
+                ), tags=(order['order_number'],))
+        
+        ttk.Button(search_frame, text="🔍 Поиск", command=apply_filters).pack(side=tk.LEFT, padx=5)
+        ttk.Button(search_frame, text="🔄 Сброс", command=lambda: [year_var.set(''), order_num_var.set(''), apply_filters()]).pack(side=tk.LEFT, padx=5)
+        # ============================================
+        
+        tree_frame = ttk.Frame(win)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # ✅ ДОБАВЛЕН СТОЛБЕЦ "Год"
+        columns = ('№', 'Заказ', 'Год', 'Дата создания', 'Дата редактирования', 'Позиций', 'Списан')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
+                           yscrollcommand=scrollbar.set, height=15)
+        
+        # ✅ НАСТРОЙКА СОРТИРОВКИ ПО СТОЛБЦАМ
+        sort_state = {col: False for col in columns}  # False = по возрастанию
+        
+        def sort_tree(col):
+            """Сортировка таблицы при клике на заголовок"""
+            nonlocal sort_state
+            items = [(tree.set(item, col), item) for item in tree.get_children('')]
+            
+            # Определяем тип сортировки
+            try:
+                # Пробуем как число
+                items.sort(key=lambda t: int(t[0]) if t[0].isdigit() else float(t[0].replace(',', '.')), 
+                          reverse=sort_state[col])
+            except:
+                # Как строка (даты, текст)
+                items.sort(key=lambda t: t[0], reverse=sort_state[col])
+            
+            # Перемещаем элементы
+            for index, (val, item) in enumerate(items):
+                tree.move(item, '', index)
+            
+            # Меняем направление
+            sort_state[col] = not sort_state[col]
+        
+        # Настраиваем заголовки с сортировкой
+        tree.heading('№', text='№', command=lambda: sort_tree('№'))
+        tree.heading('Заказ', text='Номер заказа', command=lambda: sort_tree('Заказ'))
+        tree.heading('Год', text='Год', command=lambda: sort_tree('Год'))
+        tree.heading('Дата создания', text='Дата создания', command=lambda: sort_tree('Дата создания'))
+        tree.heading('Дата редактирования', text='Дата редактирования', command=lambda: sort_tree('Дата редактирования'))
+        tree.heading('Позиций', text='Позиций', command=lambda: sort_tree('Позиций'))
+        tree.heading('Списан', text='Списан', command=lambda: sort_tree('Списан'))
+        # ============================================
+        
+        tree.column('№', width=50, anchor='center')
+        tree.column('Заказ', width=100, anchor='center')
+        tree.column('Год', width=60, anchor='center')
+        tree.column('Дата создания', width=130, anchor='center')
+        tree.column('Дата редактирования', width=130, anchor='center')
+        tree.column('Позиций', width=70, anchor='center')
+        tree.column('Списан', width=80, anchor='center')
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=tree.yview)
+        
+        # Заполняем таблицу
+        for i, order in enumerate(orders, 1):
+            created_at = order.get('created_at', '')
+            updated_at = order.get('updated_at', '')
+            order_year = order.get('order_year', datetime.now().year)
+            
+            if created_at:
+                try:
+                    dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                    created_at = dt.strftime('%d.%m.%Y %H:%M')
+                except:
+                    pass
+            
+            if updated_at:
+                try:
+                    dt = datetime.strptime(updated_at, '%Y-%m-%d %H:%M:%S')
+                    updated_at = dt.strftime('%d.%m.%Y %H:%M')
+                except:
+                    pass
+            
+            display_updated = "—" if updated_at == created_at else updated_at
+            items_count = order.get('items_count', 0)
+            
+            # Проверяем, списан ли заказ
+            from inventory_db import get_connection
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM deducted_orders WHERE order_number = ? AND order_year = ?',
+                     (order['order_number'], order_year))
+            is_deducted = c.fetchone()[0] > 0
+            conn.close()
+            
+            deducted_text = "✅ Да" if is_deducted else "❌ Нет"
+            
+            tree.insert('', tk.END, values=(
+                i,
+                order['order_number'],
+                order_year,
+                created_at,
+                display_updated,
+                items_count,
+                deducted_text
+            ), tags=(order['order_number'],))
+        
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(pady=10)
+
+        def load_selected():
+            """Загрузка выбранного заказа с восстановлением из бэкапа"""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для загрузки!")
+                return
+            
+            item = tree.item(selection[0])
+            # ✅ ВАЖНО: Получаем номер заказа как СТРОКУ (не преобразуем в int!)
+            order_number = str(item['values'][1]).strip()  # ← Добавлено str() и strip()
+            order_year = int(item['values'][2])
+            
+            print(f"🔍 Загрузка заказа:")
+            print(f"   Номер: '{order_number}' (тип: {type(order_number).__name__})")
+            print(f"   Год: {order_year}")
+            
+            # ✅ ПЫТАЕМСЯ ЗАГРУЗИТЬ ИЗ БАЗЫ
+            from orders_db import get_order
+            order = get_order(order_number, order_year)
+            
+            # ✅ ЕСЛИ НЕ УДАЛОСЬ - ПРЕДЛАГАЕМ ВОССТАНОВИТЬ ИЗ БЭКАПА
+            if not order or not order.get('items'):
+                from order_backup import get_order_backups, restore_order_from_backup
+                # ✅ ВАЖНО: Передаём order_number как строку (с ведущими нулями!)
+                backups = get_order_backups(order_number, order_year)
+                
+                print(f"📦 Найдено бэкапов: {len(backups)}")
+                for b in backups:
+                    print(f"   - {b['filepath']}")
+                
+                if backups:
+                    # ✅ СОЗДАЁМ ОКНО ВЫБОРА БЭКАПА
+                    backup_win = tk.Toplevel(win)
+                    backup_win.title(f"📋 Восстановление заказа №{order_number}")
+                    backup_win.geometry("600x400")
+                    backup_win.transient(win)
+                    backup_win.grab_set()
+                    
+                    # Центрируем окно
+                    backup_win.update_idletasks()
+                    x = win.winfo_x() + (win.winfo_width() // 2) - (600 // 2)
+                    y = win.winfo_y() + (win.winfo_height() // 2) - (400 // 2)
+                    backup_win.geometry(f"600x400+{x}+{y}")
+                    
+                    ttk.Label(backup_win, text=f"Заказ №{order_number} ({order_year})",
+                             font=('Arial', 12, 'bold')).pack(pady=10)
+                    ttk.Label(backup_win, text="❌ Заказ в базе повреждён или пуст!",
+                             foreground='red', font=('Arial', 10)).pack(pady=5)
+                    ttk.Label(backup_win, text="✅ Найдены бэкапы этого заказа:",
+                             foreground='green', font=('Arial', 10)).pack(pady=5)
+                    
+                    # Таблица бэкапов
+                    backup_columns = ('Дата', 'Позиций', 'Файл')
+                    backup_tree = ttk.Treeview(backup_win, columns=backup_columns, show='headings', height=10)
+                    backup_tree.heading('Дата', text='Дата создания')
+                    backup_tree.heading('Позиций', text='Позиций')
+                    backup_tree.heading('Файл', text='Файл')
+                    backup_tree.column('Дата', width=150)
+                    backup_tree.column('Позиций', width=80)
+                    backup_tree.column('Файл', width=300)
+                    backup_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+                    
+                    # Заполняем бэкапы
+                    for backup in backups:
+                        backup_tree.insert('', tk.END, values=(
+                            backup['created_at'],
+                            backup['items_count'],
+                            os.path.basename(backup['filepath'])
+                        ), tags=(backup['filepath'],))
+                    
+                    selected_backup = [None]
+                    
+                    def restore_from_selected():
+                        selection = backup_tree.selection()
+                        if not selection:
+                            messagebox.showwarning("Внимание", "Выберите бэкап для восстановления!", parent=backup_win)
+                            return
+                        
+                        backup_filepath = backup_tree.item(selection[0])['tags'][0]
+                        items = restore_order_from_backup(backup_filepath)
+                        
+                        if items:
+                            self.order_items = items
+                            self.order_number.delete(0, tk.END)
+                            # ✅ ВАЖНО: Вставляем номер заказа как строку (с ведущими нулями!)
+                            self.order_number.insert(0, order_number)  # ← str() обязательно!
+                            self.recalculate_totals()
+                            self.update_order_display()
+                            
+                            # ✅ СОХРАНЯЕМ ИНФОРМАЦИЮ О ЗАКАЗЕ
+                            self.current_order_info = {
+                                'order_number': order_number,  # ← Строка!
+                                'order_year': order_year,
+                                'is_deducted': False
+                            }
+                            
+                            # ✅ АВТОМАТИЧЕСКИ СОХРАНЯЕМ В БАЗУ
+                            from orders_db import save_order
+                            save_result = save_order(order_number, items, order_year=order_year)
+                            
+                            if save_result:
+                                # ✅ ПРОВЕРЯЕМ, СПИСАН ЛИ ЗАКАЗ
+                                from inventory_db import get_connection
+                                conn = get_connection()
+                                c = conn.cursor()
+                                c.execute('SELECT COUNT(*) FROM deducted_orders WHERE order_number = ? AND order_year = ?',
+                                         (order_number, order_year))  # ← str()!
+                                is_deducted = c.fetchone()[0] > 0
+                                conn.close()
+                                
+                                self.current_order_info['is_deducted'] = is_deducted
+                                
+                                status_msg = f"Заказ №{order_number} ({order_year}) восстановлен из бэкапа!"
+                                if is_deducted:
+                                    status_msg += "\n⚠️ ЗАКАЗ БЫЛ ПРОВЕДЁН (списан)"
+                                
+                                messagebox.showinfo("Успех", status_msg, parent=backup_win)
+                                selected_backup[0] = items
+                                backup_win.destroy()
+                            else:
+                                messagebox.showerror("Ошибка", "Не удалось сохранить заказ в базу!", parent=backup_win)
+                        else:
+                            messagebox.showerror("Ошибка", "Не удалось восстановить из бэкапа!", parent=backup_win)
+                    
+                    btn_frame = ttk.Frame(backup_win)
+                    btn_frame.pack(pady=10)
+                    ttk.Button(btn_frame, text="🔄 Восстановить", command=restore_from_selected, width=15).pack(side=tk.LEFT, padx=5)
+                    ttk.Button(btn_frame, text="❌ Отмена", command=backup_win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+                    backup_win.wait_window()
+                    
+                    if selected_backup[0] is None:
+                        return  # Пользователь отменил
+                    else:
+                        win.destroy()  # ✅ ЗАКРЫВАЕМ ОКНО ЗАКАЗОВ
+                        return
+                else:
+                    messagebox.showerror("Ошибка",
+                                        f"Не удалось загрузить заказ №{order_number} ({order_year})!\n"
+                                        f"Бэкапы не найдены!",
+                                        parent=win)
+                    return
+            else:
+                # ✅ ЗАКАЗ ЗАГРУЗИЛСЯ ИЗ БАЗЫ
+                self.order_items = order['items']
+                self.order_number.delete(0, tk.END)
+                # ✅ ВАЖНО: Вставляем номер заказа как строку (с ведущими нулями!)
+                self.order_number.insert(0, order_number)
+                self.recalculate_totals()
+                self.update_order_display()
+                
+                # ✅ СОХРАНЯЕМ ИНФОРМАЦИЮ О ЗАКАЗЕ
+                self.current_order_info = {
+                    'order_number': order_number,  # ← Строка с ведущими нулями
+                    'order_year': order_year,
+                    'is_deducted': False
+                }
+                
+                # ✅ ПРОВЕРЯЕМ, СПИСАН ЛИ ЗАКАЗ
+                from inventory_db import get_connection
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute('SELECT COUNT(*) FROM deducted_orders WHERE order_number = ? AND order_year = ?',
+                         (order_number, order_year))  # ← Передаём как строку
+                is_deducted = c.fetchone()[0] > 0
+                conn.close()
+                self.current_order_info['is_deducted'] = is_deducted
+                
+                status_msg = f"Заказ №{order_number} ({order_year}) загружен!"
+                if is_deducted:
+                    status_msg += "\n⚠️ ЗАКАЗ ПРОВЕДЁН (списан)"
+                    messagebox.showwarning("Внимание", status_msg, parent=win)
+                else:
+                    messagebox.showinfo("Успех", status_msg, parent=win)
+                win.destroy()
+
+        def deduct_selected():
+            """Списание выбранного заказа"""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для списания!")
+                return
+            
+            item = tree.item(selection[0])
+            order_number = item['values'][1]
+            order_year = item['values'][2]
+            
+            # Проверяем, не списан ли уже
+            from inventory_db import get_connection
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM deducted_orders WHERE order_number = ? AND order_year = ?',
+                     (order_number, order_year))
+            if c.fetchone()[0] > 0:
+                conn.close()
+                messagebox.showwarning("Внимание", f"Заказ №{order_number} ({order_year}) уже списан!")
+                return
+            
+            order = get_order(order_number)
+            if not order or not order.get('items'):
+                conn.close()
+                messagebox.showerror("Ошибка", "Не удалось загрузить заказ!")
+                return
+            
+            if not messagebox.askyesno("Подтверждение",
+                                      f"Списать материалы для заказа №{order_number} ({order_year})?\n"
+                                      f"Материалы будут списаны со склада."):
+                conn.close()
+                return
+            
+            # Собираем материалы из заказа
+            materials = {}
+            for order_item in order['items']:
+                from database import get_materials_for_item
+                mats, _ = get_materials_for_item(order_item['name'], order_item['articul'])
+                for mat_name, qty in mats:
+                    total_qty = qty * order_item['qty']
+                    if mat_name in materials:
+                        materials[mat_name] += total_qty
+                    else:
+                        materials[mat_name] = total_qty
+            
+            # Списываем материалы
+            from inventory_db import deduct_order_materials
+            if deduct_order_materials(order_number, order_year, materials):
+                messagebox.showinfo("Успех",
+                                   f"Заказ №{order_number} ({order_year}) списан!\n"
+                                   f"Списано материалов: {len(materials)} позиций")
+                apply_filters()  # Обновляем таблицу
+            else:
+                messagebox.showerror("Ошибка", "Не удалось списать заказ!")
+            
+            conn.close()
+
+        def delete_selected():
+            """✅ Удаление выбранного заказа со всеми связанными данными"""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Внимание", "Выберите заказ для удаления!", parent=win)
+                return
+            
+            item = tree.item(selection[0])
+            order_number = str(item['values'][1]).strip()
+            order_year = int(item['values'][2])
+            
+            # ✅ ЗАПРОС ПАРОЛЯ
+            password = simpledialog.askstring("Подтверждение",
+                "Введите пароль администратора:",
+                show='*',
+                parent=win)
+            if not password or password != "2001884":
+                messagebox.showerror("Ошибка", "Неверный пароль!", parent=win)
+                return
+            
+            # ✅ ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
+            if not messagebox.askyesno("⚠️ Внимание!",
+                f"Вы действительно хотите УДАЛИТЬ заказ №{order_number} ({order_year})?\n"
+                f"Будут удалены:\n"
+                f"• Сам заказ из базы заказов\n"
+                f"• Все позиции заказа (order_items)\n"
+                f"• Все транзакции списания материалов (если заказ был проведён)\n"
+                f"• Запись о списании заказа (deducted_orders)\n"
+                f"✅ Материалы будут ВОЗВРАЩЕНЫ на склад!\n"
+                f"Это действие НЕЛЬЗЯ отменить!",
+                parent=win):
+                return
+            
+            try:
+                # ✅ 1. ПОЛУЧАЕМ СПИСОК МАТЕРИАЛОВ, КОТОРЫЕ БЫЛИ СПИСАНЫ
+                from inventory_db import get_connection as get_inv_connection
+                conn_inv = get_inv_connection()
+                c_inv = conn_inv.cursor()
+                
+                c_inv.execute('''SELECT material_id, quantity
+                    FROM inventory_transactions
+                    WHERE transaction_type = 'расход'
+                    AND order_number = ? AND order_year = ?''',
+                    (order_number, order_year))
+                transactions = c_inv.fetchall()
+                
+                materials_to_return = {}
+                for trans in transactions:
+                    mat_id = trans['material_id']
+                    qty = trans['quantity']
+                    if mat_id in materials_to_return:
+                        materials_to_return[mat_id] += qty
+                    else:
+                        materials_to_return[mat_id] = qty
+                
+                # ✅ 2. ВОЗВРАЩАЕМ МАТЕРИАЛЫ НА СКЛАД
+                returned_count = 0
+                for mat_id, qty in materials_to_return.items():
+                    c_inv.execute('''UPDATE materials_stock
+                        SET quantity = quantity + ?, updated_at = ?
+                        WHERE id = ?''',
+                        (qty, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), mat_id))
+                    returned_count += 1
+                
+                # ✅ 3. Удаляем транзакции и записи о списании
+                c_inv.execute('''DELETE FROM inventory_transactions
+                    WHERE transaction_type = 'расход'
+                    AND order_number = ? AND order_year = ?''',
+                    (order_number, order_year))
+                trans_deleted = c_inv.rowcount
+                
+                c_inv.execute('''DELETE FROM deducted_orders
+                    WHERE order_number = ? AND order_year = ?''',
+                    (order_number, order_year))
+                deducted_deleted = c_inv.rowcount
+                
+                conn_inv.commit()
+                conn_inv.close()
+                
+                # ✅ 4. Удаляем заказ из orders_db
+                from orders_db import get_connection as get_orders_connection
+                conn_orders = get_orders_connection()
+                c_orders = conn_orders.cursor()
+                
+                c_orders.execute('''SELECT id FROM orders
+                    WHERE order_number = ? AND order_year = ?''',
+                    (order_number, order_year))
+                order = c_orders.fetchone()
+                
+                if order:
+                    order_id = order['id']
+                    c_orders.execute('DELETE FROM order_items WHERE order_id = ?', (order_id,))
+                    items_deleted = c_orders.rowcount
+                    
+                    c_orders.execute('''DELETE FROM orders
+                        WHERE order_number = ? AND order_year = ?''',
+                        (order_number, order_year))
+                    conn_orders.commit()
+                conn_orders.close()
+                
+                # ✅ 5. ОБНОВЛЯЕМ СПИСОК ЗАКАЗОВ ИЗ БАЗЫ
+                nonlocal orders
+                from orders_db import get_all_orders
+                orders = get_all_orders()
+                
+                # ✅ 6. ОБНОВЛЯЕМ ИНТЕРФЕЙС
+                messagebox.showinfo("Успех",
+                    f"Заказ №{order_number} ({order_year}) удалён!\n"
+                    f"Удалено:\n"
+                    f"• Позиций заказа: {items_deleted if order else 0}\n"
+                    f"• Транзакций: {trans_deleted}\n"
+                    f"• Записей списания: {deducted_deleted}\n"
+                    f"✅ Возвращено на склад:\n"
+                    f"• Материалов: {returned_count} поз.",
+                    parent=win)
+                
+                # ✅ 7. ПЕРЕЗАГРУЖАЕМ ТАБЛИЦУ
+                apply_filters()
+                
+            except Exception as e:
+                print(f"❌ Ошибка удаления заказа: {e}")
+                import traceback
+                traceback.print_exc()
+                messagebox.showerror("Ошибка",
+                    f"Не удалось удалить заказ:\n{e}",
+                    parent=win)
+
+        # ✅ КНОПКИ: Загрузить, Списать, Удалить, Закрыть
+        ttk.Button(btn_frame, text="📂 Загрузить", command=load_selected, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="📝 Списать заказ", command=deduct_selected, width=15).pack(side=tk.LEFT, padx=5)
+        # ✅ НОВАЯ КНОПКА - УДАЛИТЬ
+        ttk.Button(btn_frame, text="🗑️ Удалить", command=delete_selected, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="❌ Закрыть", command=win.destroy, width=15).pack(side=tk.LEFT, padx=5)
+
+        tree.bind('<Double-1>', lambda e: load_selected())
+        tree.focus()
+
+    def check_database(self):
+        if not os.path.exists(self.db_file):
+            messagebox.showwarning("База не найдена", "Импортируйте базу через Админ-панель")
+
+    def on_closing(self):
+        """Обработчик закрытия окна"""
+        try:
+            # ✅ АВТО-БЭКАП ПРИ ЗАКРЫТИИ
+            if self.config.get('auto_backup_enabled', True):
+                print("\n🔄 Создание авто-бэкапа при закрытии...")
+                from backup_manager import create_auto_backup_on_close
+                create_auto_backup_on_close()
+            
+            # Уничтожаем все дочерние окна
+            for widget in self.root.winfo_children():
+                if isinstance(widget, tk.Toplevel):
+                    widget.destroy()
+            self.root.update_idletasks()
+            
+            # Сохраняем геометрию окна
+            current_geometry = self.root.geometry()
+            print(f"📐 Геометрия при закрытии: {current_geometry}")
+            
+            import re
+            match = re.match(r'(\d+)x(\d+)([+-]\d+)([+-]\d+)', current_geometry)
+            if match:
+                width, height, x, y = match.groups()
+                width_int = int(width)
+                height_int = int(height)
+                
+                if width_int > 300 and height_int > 300:
+                    self.config['window_width'] = width_int
+                    self.config['window_height'] = height_int
+                    self.config['window_x'] = int(x)
+                    self.config['window_y'] = int(y)
+                    print(f"✅ Новые размеры: {width}x{height}+{x}+{y}")
+            
+            try:
+                sash_pos = self.main_paned.sashpos(0)
+                if sash_pos > 0:
+                    self.config['sash_position'] = sash_pos
+                    print(f"📏 Новый разделитель: {sash_pos}")
+            except:
+                pass
+            
+            save_config(self.config)
+            
+            # ✅ ПРОВЕРЯЕМ НАСТРОЙКУ "СПРАШИВАТЬ О СОХРАНЕНИИ"
+            ask_save_on_close = self.config.get('ask_save_on_close', True)
+            
+            # Проверяем: есть ли позиции в заказе и введен ли номер заказа
+            order_number = self.order_number.get().strip()
+            has_items = len(self.order_items) > 0
+            has_order_number = bool(order_number)
+            
+            print(f"🔍 Проверка сохранения:")
+            print(f"   ask_save_on_close: {ask_save_on_close}")
+            print(f"   has_items: {has_items}")
+            print(f"   has_order_number: {has_order_number}")
+            
+            # ✅ Если настройка включена И есть позиции И введен номер - спрашиваем
+            if ask_save_on_close and has_items and has_order_number:
+                from orders_db import get_order
+                saved_order = get_order(order_number) if order_number else None
+                
+                def orders_are_equal(order1, order2):
+                    if not order1 or not order2:
+                        return False
+                    if len(order1) != len(order2):
+                        return False
+                    for i, item in enumerate(order1):
+                        if i >= len(order2):
+                            return False
+                        item2 = order2[i]
+                        if (item['name'] != item2['name'] or
+                            item['articul'] != item2['articul'] or
+                            item['qty'] != item2['qty'] or
+                            item.get('item_number') != item2.get('item_number') or
+                            item.get('color') != item2.get('color')):
+                            return False
+                    return True
+                
+                has_unsaved = False
+                if not saved_order:
+                    has_unsaved = True
+                    print("📝 Заказ не сохранен в базе")
+                else:
+                    saved_items = saved_order.get('items', [])
+                    if not orders_are_equal(self.order_items, saved_items):
+                        has_unsaved = True
+                        print("📝 Есть несохраненные изменения")
+                    else:
+                        print("📝 Нет несохраненных изменений")
+                
+                if has_unsaved:
+                    # Показываем диалог сохранения
+                    dialog = tk.Toplevel(self.root)
+                    dialog.title("Сохранение заказа")
+                    dialog.geometry("400x280")
+                    dialog.transient(self.root)
+                    dialog.grab_set()
+                    dialog.resizable(False, False)
+                    
+                    dialog.update_idletasks()
+                    x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (dialog.winfo_width() // 2)
+                    y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (dialog.winfo_height() // 2)
+                    dialog.geometry(f"+{x}+{y}")
+                    
+                    dialog.lift()
+                    dialog.focus_force()
+                    
+                    ttk.Label(dialog, text="Сохранить заказ?", font=('Arial', 12, 'bold')).pack(pady=10)
+                    ttk.Label(dialog, text=f"В заказе {len(self.order_items)} позиций", font=('Arial', 10)).pack(pady=5)
+                    
+                    if saved_order:
+                        ttk.Label(dialog, text="Есть несохраненные изменения!", 
+                                 font=('Arial', 9), foreground='red').pack(pady=2)
+                    
+                    frame = ttk.Frame(dialog)
+                    frame.pack(pady=10)
+                    
+                    ttk.Label(frame, text="Номер заказа:").pack(side=tk.LEFT, padx=5)
+                    order_entry = ttk.Entry(frame, width=20)
+                    order_entry.pack(side=tk.LEFT, padx=5)
+                    
+                    if order_number:
+                        order_entry.insert(0, order_number)
+                    
+                    result = [False]
+                    
+                    def save_and_exit():
+                        new_order_number = order_entry.get().strip()
+                        if not new_order_number:
+                            messagebox.showwarning("Внимание", "Введите номер заказа!", parent=dialog)
+                            order_entry.focus()
+                            return
+                        
+                        self.order_number.delete(0, tk.END)
+                        self.order_number.insert(0, new_order_number)
+                        
+                        print(f"💾 Сохраняю заказ №{new_order_number} при выходе")
+                        
+                        from orders_db import save_order
+                        save_result = save_order(new_order_number, self.order_items)
+                        
+                        if save_result:
+                            print(f"✅ Заказ №{new_order_number} успешно сохранен")
+                            result[0] = True
+                            dialog.destroy()
+                            self._finalize_close()
+                        else:
+                            messagebox.showerror("Ошибка", "Не удалось сохранить заказ!", parent=dialog)
+                    
+                    def exit_without_saving():
+                        if messagebox.askyesno("Подтверждение", 
+                                              "Вы уверены, что хотите выйти без сохранения?\n\n"
+                                              "Все изменения будут потеряны!", 
+                                              parent=dialog):
+                            result[0] = True
+                            dialog.destroy()
+                            self._finalize_close()
+                    
+                    def cancel():
+                        result[0] = False
+                        dialog.destroy()
+                    
+                    btn_frame = ttk.Frame(dialog)
+                    btn_frame.pack(pady=10)
+                    
+                    ttk.Button(btn_frame, text="💾 Сохранить и выйти", 
+                              command=save_and_exit, width=25).pack(pady=2)
+                    ttk.Button(btn_frame, text="❌ Выйти без сохранения", 
+                              command=exit_without_saving, width=25).pack(pady=2)
+                    ttk.Button(btn_frame, text="↩️ Отмена", 
+                              command=cancel, width=25).pack(pady=2)
+                    
+                    order_entry.bind('<Return>', lambda e: save_and_exit())
+                    order_entry.focus()
+                    
+                    self.root.wait_window(dialog)
+                    
+                    # Если отменили закрытие - выходим из функции
+                    if not result[0]:
+                        print("↩️ Закрытие отменено пользователем")
+                        return
+                    
+                    # Если результат True - продолжаем закрытие
+                    print("✅ Пользователь подтвердил закрытие")
+                else:
+                    # Нет несохраненных изменений - закрываем
+                    print("✅ Нет несохраненных изменений, закрываем программу")
+                    self._finalize_close()
+            else:
+                # ✅ Настройка выключена ИЛИ заказ пуст - закрываем без вопроса
+                print("✅ Настройка 'Спрашивать о сохранении' выключена ИЛИ заказ пуст")
+                self._finalize_close()
+                
+        except Exception as e:
+            print(f"❌ Ошибка при закрытии: {e}")
+            import traceback
+            traceback.print_exc()
+            self._finalize_close()
+
+    def _finalize_close(self):
+        """Окончательное закрытие программы"""
+        try:
+            print("🔚 Завершаем работу программы")
+            
+            # Очищаем переменные
+            self.cleanup_tkinter_vars()
+            
+            # Закрываем программу
+            self.root.destroy()
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка при финальном закрытии: {e}")
+            os._exit(0)
+
+    def cleanup_tkinter_vars(self):
+        """Очищает все tkinter переменные"""
+        try:
+            # Очищаем строковые переменные
+            if hasattr(self, 'search_status_var'):
+                self.search_status_var.set("")
+            if hasattr(self, 'search_status_var2'):
+                self.search_status_var2.set("")
+            if hasattr(self, 'name_var'):
+                self.name_var.set("")
+            if hasattr(self, 'articul_var'):
+                self.articul_var.set("")
+            if hasattr(self, 'item_number_var'):
+                self.item_number_var.set("")
+            if hasattr(self, 'qty_var'):
+                self.qty_var.set("")
+            if hasattr(self, 'color_var'):
+                self.color_var.set("")
+            
+            # Удаляем ссылки на переменные
+            attrs_to_delete = []
+            for attr in dir(self):
+                if attr.endswith('_var') or attr.endswith('_Var') or attr.startswith('search_status_var'):
+                    attrs_to_delete.append(attr)
+            
+            for attr in attrs_to_delete:
+                try:
+                    delattr(self, attr)
+                except:
+                    pass
+                    
+        except Exception as e:
+            print(f"⚠️ Ошибка при очистке переменных: {e}")
+
+    def clear_inventory(self):  # ← ДОБАВИТЬ self
+        """Очистка склада материалов"""
+        if not messagebox.askyesno("Подтверждение",
+            "Очистить ВСЕ материалы со склада?\n\n"
+            "Будут удалены:\n"
+            "- Все транзакции (приход, расход, инвентаризация)\n"
+            "- Все списанные заказы\n\n"
+            "Количества материалов будут обнулены.\n"
+            "Это действие нельзя отменить!"):
+            return
+        
+        try:
+            from inventory_db import get_connection
+            conn = get_connection()
+            c = conn.cursor()
+            
+            # ✅ Удаляем все транзакции
+            c.execute("DELETE FROM inventory_transactions")
+            trans_deleted = c.rowcount
+            
+            # ✅ Удаляем все списанные заказы
+            c.execute("DELETE FROM deducted_orders")
+            deducted_deleted = c.rowcount
+            
+            # ✅ Обнуляем количество всех материалов
+            c.execute("UPDATE materials_stock SET quantity = 0")
+            materials_reset = c.rowcount
+            
+            conn.commit()
+            conn.close()
+            
+            messagebox.showinfo("Успех", 
+                f"Склад очищен!\n\n"
+                f"Удалено транзакций: {trans_deleted}\n"
+                f"Удалено списанных заказов: {deducted_deleted}\n"
+                f"Обнулено материалов: {materials_reset}")
+            
+            print(f"✅ Склад очищен: {trans_deleted} транзакций, {deducted_deleted} списаний, {materials_reset} материалов")
+            
+        except Exception as e:
+            print(f"❌ Ошибка очистки склада: {e}")
+            messagebox.showerror("Ошибка", f"Не удалось очистить склад:\n{e}")
+
+    def open_item_drawing(self):
+        """Открывает чертёж для выбранной позиции в заказе"""
+        import os
+        
+        selection = self.order_tree.selection()
+        if not selection:
+            messagebox.showwarning("Внимание", "Выберите позицию в заказе!")
+            return
+        
+        # Получаем данные из выделенной строки
+        item_values = self.order_tree.item(selection[0])['values']
+        if not item_values:
+            return
+        
+        # item_values: (№, Пункт, Наименование, Артикул, Кол-во, Цвет)
+        item_number = item_values[1]
+        item_name = item_values[2]
+        articul = item_values[3]
+        
+        order_number = self.order_number.get().strip()
+        if not item_name or not articul:
+            messagebox.showwarning("Внимание", "Не удалось получить данные изделия!")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"📐 ОТКРЫТИЕ ЧЕРТЕЖА ДЛЯ: {item_name}")
+        print(f"   Артикул: {articul}")
+        print(f"{'='*60}\n")
+        
+        drawing_path = None
+        
+        # Определяем тип изделия
+        is_nonstandard = (articul in ['нестандарт', 'см.рис.', 'см. рис.'] or 
+                          item_name.startswith('[НЕСТАНДАРТ]'))
+        
+        if is_nonstandard:
+            print("📁 Поиск в папке нестандартных изделий...")
+            nonstandard_dir = r"Y:\Excel для мк\Чертежи"
+            
+            if os.path.exists(nonstandard_dir):
+                # Очищаем имя изделия от служебных пометок
+                clean_name = item_name
+                if clean_name.startswith('[НЕСТАНДАРТ]'):
+                    clean_name = clean_name.replace('[НЕСТАНДАРТ]', '').strip()
+                if '_(' in clean_name and clean_name.endswith(')'):
+                    clean_name = clean_name.split('_(')[0].strip()
+                
+                # ✅ Ищем по полному шаблону: {имя}_({заказ} п.{позиция}).pdf
+                if order_number and item_number:
+                    # Вариант 1: точное совпадение
+                    drawing_name = f"{clean_name}_({order_number} п.{item_number}).pdf"
+                    drawing_path = os.path.join(nonstandard_dir, drawing_name)
+                    print(f"   🔍 Ищем: {drawing_name}")
+                    
+                    # Вариант 2: без пробела после "п."
+                    if not os.path.exists(drawing_path):
+                        drawing_name = f"{clean_name}_({order_number}п.{item_number}).pdf"
+                        drawing_path = os.path.join(nonstandard_dir, drawing_name)
+                        print(f"   🔍 Ищем (вариант 2): {drawing_name}")
+                    
+                    # Вариант 3: поиск по частичному совпадению
+                    if not os.path.exists(drawing_path):
+                        print(f"   ⚠️ Точное совпадение не найдено, ищем по шаблону...")
+                        for filename in os.listdir(nonstandard_dir):
+                            if filename.lower().endswith('.pdf'):
+                                # Проверяем: имя + заказ + позиция
+                                if (clean_name.lower() in filename.lower() and 
+                                    order_number in filename and 
+                                    f'п.{item_number}' in filename):
+                                    drawing_path = os.path.join(nonstandard_dir, filename)
+                                    print(f"   ✅ Найдено: {filename}")
+                                    break
+                    
+                    # Вариант 4: только имя + позиция (если номер заказа не совпадает)
+                    if not drawing_path or not os.path.exists(drawing_path):
+                        for filename in os.listdir(nonstandard_dir):
+                            if filename.lower().endswith('.pdf'):
+                                if (clean_name.lower() in filename.lower() and 
+                                    f'п.{item_number}' in filename):
+                                    drawing_path = os.path.join(nonstandard_dir, filename)
+                                    print(f"   ✅ Найдено по позиции: {filename}")
+                                    break
+                else:
+                    # Если нет заказа/позиции — ищем как раньше
+                    drawing_name = f"{clean_name}.pdf"
+                    drawing_path = os.path.join(nonstandard_dir, drawing_name)
+                    if not os.path.exists(drawing_path):
+                        for filename in os.listdir(nonstandard_dir):
+                            if filename.lower().endswith('.pdf') and clean_name.lower() in filename.lower():
+                                drawing_path = os.path.join(nonstandard_dir, filename)
+                                break
+            else:
+                messagebox.showerror("Ошибка", f"Папка не найдена:\n{nonstandard_dir}")
+                return
+        else:
+            # СТАНДАРТНОЕ - ищем в AppData\Local\ZakazMK\Чертежи по артикулу
+            print("📁 Поиск в папке стандартных изделий...")
+            
+            standard_dir = os.path.join(os.environ['LOCALAPPDATA'], 'ZakazMK', 'Чертежи')
+            
+            if os.path.exists(standard_dir):
+                # Ищем ПО АРТИКУЛУ
+                drawing_name = f"{articul}.pdf"
+                drawing_path = os.path.join(standard_dir, drawing_name)
+                print(f"   🔍 Ищем файл: {drawing_name}")
+                
+                if not os.path.exists(drawing_path):
+                    # Пробуем найти по имени
+                    print(f"   ⚠️ По артикулу не найдено, пробуем по имени...")
+                    for filename in os.listdir(standard_dir):
+                        if filename.lower().endswith('.pdf') and item_name.lower() in filename.lower():
+                            drawing_path = os.path.join(standard_dir, filename)
+                            print(f"   ✅ Найдено совпадение: {filename}")
+                            break
+            else:
+                messagebox.showerror("Ошибка", f"Папка с чертежами не найдена:\n{standard_dir}")
+                return
+        
+        # Открываем чертёж
+        if drawing_path and os.path.exists(drawing_path):
+            print(f"✅ Чертёж найден: {drawing_path}")
+            try:
+                os.startfile(drawing_path)
+                print(f"✅ Чертёж открыт")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось открыть файл:\n{e}")
+        else:
+            folder_path = nonstandard_dir if is_nonstandard else standard_dir
+            messagebox.showinfo(
+                "Информация",
+                f"Чертёж не найден для:\n{item_name}\n"
+                f"Заказ №{order_number}, позиция: {item_number}\n"
+                f"Ожидаемый шаблон: {clean_name}_({order_number} п.{item_number}).pdf"
+            )

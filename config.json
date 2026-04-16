@@ -1,0 +1,17 @@
+{
+  "first_run": "2026-03-24 12:00:00",
+  "window_width": 1200,
+  "window_height": 700,
+  "window_x": 229,
+  "window_y": 163,
+  "sash_position": 555,
+  "startup_added": true,
+  "start_minimized": false,
+  "close_to_tray": false,
+  "ask_save_on_close": true,
+  "inventory_sort_column": "Наименование",
+  "inventory_sort_reverse": false,
+  "cutting_stock_length": 6000,
+  "show_cutting_maps": false,
+  "kerf_width": 3
+}

@@ -1,0 +1,10 @@
+cd /d "C:\Users\oas\Desktop\База МК\1"
+pyinstaller --windowed --icon=icon.ico --name "ZakazMK" --add-data "image.png;." --add-data "icon.ico;." main.py
+
+cd /d "C:\Users\oas\Desktop\База МК\1"
+C:\Users\oas\AppData\Local\Programs\Python\Python311\python.exe main.py
+
+cd /d "C:\Users\oas\Desktop\База МК\1"
+C:\Users\oas\AppData\Local\Programs\Python\Python311\python.exe combine_py.py
+
+MK-2024-PRO-LICENSE
