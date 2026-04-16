@@ -15,3 +15,13 @@ tmp/
 # Конфиги с паролями (если есть)
 config.local.json
 *.env
+
+# Установщики и билды
+installer/*.exe
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+*.log
+.env
